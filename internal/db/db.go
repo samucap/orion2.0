@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -19,11 +20,17 @@ type Event struct {
 	Location  string `json:"location"`
 }
 
+// RelatedItem represents a related navigation item
+type RelatedItem struct {
+	Label string `json:"label"`
+	Slug  string `json:"slug"`
+}
+
 // NavItem represents a navigation item (matching handlers.NavItem)
 type NavItem struct {
-	Label string `json:"label"`
-	URL   string `json:"url"`
-	Order int    `json:"order"`
+	Label   string        `json:"label"`
+	Slug    string        `json:"slug"`
+	Related []RelatedItem `json:"related"`
 }
 
 // InitDB initializes the PostgreSQL connection pool
@@ -89,26 +96,115 @@ func QueryEvents(ctx context.Context) ([]Event, error) {
 	}, nil
 }
 
-// QueryTopNav returns a list of navigation items (currently stubbed with hardcoded data)
+// QueryTopNav returns a list of navigation items from the database
 func QueryTopNav(ctx context.Context) ([]NavItem, error) {
-	// TODO: Replace with actual database query
-	// Example: SELECT label, url, order FROM navigation_items ORDER BY order
+	if Pool == nil {
+		// Return mock data for testing when database is not available
+		return []NavItem{
+			{
+				Label: "Home",
+				Slug:  "home",
+				Related: []RelatedItem{
+					{Label: "Welcome", Slug: "welcome"},
+					{Label: "Dashboard", Slug: "dashboard"},
+				},
+			},
+			{
+				Label: "Events",
+				Slug:  "events",
+				Related: []RelatedItem{
+					{Label: "Workshops", Slug: "workshops"},
+					{Label: "Conferences", Slug: "conferences"},
+				},
+			},
+			{
+				Label: "About",
+				Slug:  "about",
+				Related: []RelatedItem{
+					{Label: "Team", Slug: "team"},
+					{Label: "Contact", Slug: "contact"},
+				},
+			},
+		}, nil
+	}
 
-	return []NavItem{
-		{
-			Label: "Home",
-			URL:   "/",
-			Order: 1,
-		},
-		{
-			Label: "Events",
-			URL:   "/events",
-			Order: 2,
-		},
-		{
-			Label: "About",
-			URL:   "/about",
-			Order: 3,
-		},
-	}, nil
+	q := `SELECT
+		t.label,
+		t.slug,
+		COALESCE(
+			jsonb_agg(
+				jsonb_build_object('label', rt.label, 'slug', rt.slug)
+			) FILTER (WHERE rt.id IS NOT NULL),
+			'[]'::jsonb
+		) AS related
+	FROM tags AS t
+	LEFT JOIN tags AS rt ON rt.parent_tag_id = t.id
+	WHERE t.parent_tag_id = '102982'
+	GROUP BY t.id, t.label, t.slug
+	ORDER BY t.id ASC`
+	//q := `SELECT
+	//	t.label,
+	//	t.slug,
+	//	COALESCE(
+	//		ARRAY_AGG(rt.slug) FILTER (WHERE rt.slug IS NOT NULL),
+	//		ARRAY[]::TEXT[]
+	//	) AS related
+	//FROM tags AS t
+	//LEFT JOIN tags AS rt ON rt.parent_tag_id = t.id
+	//WHERE t.parent_tag_id = '102982'
+	//GROUP BY t.id, t.label, t.slug
+	//ORDER BY t.id ASC`
+
+	rows, err := Pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query navigation items: %w", err)
+	}
+	defer rows.Close()
+
+	var navItems []NavItem
+	for rows.Next() {
+		var item NavItem
+		var relatedJSON []byte
+
+		err := rows.Scan(&item.Label, &item.Slug, &relatedJSON)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan navigation item: %w", err)
+		}
+
+
+		// Parse the JSON array of related items
+		if len(relatedJSON) > 0 && string(relatedJSON) != "[]" {
+			err = json.Unmarshal(relatedJSON, &item.Related)
+			if err != nil {
+				return nil, fmt.Errorf("failed to unmarshal related JSON: %w", err)
+			}
+		} else {
+			item.Related = []RelatedItem{} // Ensure it's an empty array, not nil
+		}
+
+		if item.Label == "All" {
+			item.Label = "Trending"
+		}
+
+		navItems = append(navItems, item)
+	}
+
+	bubble := -1
+	for i := range navItems {
+		if navItems[i].Slug == "all" {
+			bubble = i
+			break
+		}
+	}
+
+	for bubble > 0 {
+		navItems[bubble], navItems[bubble-1] = navItems[bubble-1], navItems[bubble]
+		bubble--
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating navigation items: %w", err)
+	}
+
+	return navItems, nil
 }

@@ -2,16 +2,23 @@ package handlers
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/samucap/orion2.0/internal/db"
 )
 
+// RelatedItem represents a related navigation item
+type RelatedItem struct {
+	Label string `json:"label"`
+	Slug  string `json:"slug"`
+}
+
 // NavItem represents a navigation item
 type NavItem struct {
-	Label string `json:"label"`
-	URL   string `json:"url"`
-	Order int    `json:"order"`
+	Label   string        `json:"label"`
+	Slug    string        `json:"slug"`
+	Related []RelatedItem `json:"related"`
 }
 
 // GetTopNav handles GET /top-nav endpoint
@@ -21,6 +28,8 @@ func GetTopNav(w http.ResponseWriter, r *http.Request) {
 
 	navItems, err := db.QueryTopNav(r.Context())
 	if err != nil {
+		// Log the actual error for debugging
+		slog.Error("Failed to query top navigation", "error", err)
 		http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
 		return
 	}
