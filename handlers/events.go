@@ -17,8 +17,16 @@ type Event struct {
 func GetEvents(w http.ResponseWriter, r *http.Request) {
 	// TODO: middleware to get required params from wherever url body and stop if required not present
 	// Fetch events from Polymarket API
+	params := r.URL.Query()
+	currCat := params.Get("cat")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
 	gammaBase := `https://gamma-api.polymarket.com`
-	evPath := `/events?closed=false&active=true&include_chat=false&ascending=false&limit=50&order=volume24hr`
+	evPath := `/events?closed=false&active=true&include_chat=false&ascending=false&limit=50&order=volume24hr&related_tags=true`
+	if currCat != "" {
+		evPath += "&tag_id=" + currCat
+	}
 
 	resp, err := http.Get(gammaBase + evPath)
 	if err != nil {

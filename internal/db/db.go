@@ -24,12 +24,14 @@ type Event struct {
 type RelatedItem struct {
 	Label string `json:"label"`
 	Slug  string `json:"slug"`
+	ID    string `json:"id"`
 }
 
 // NavItem represents a navigation item (matching handlers.NavItem)
 type NavItem struct {
 	Label   string        `json:"label"`
 	Slug    string        `json:"slug"`
+	ID      string        `json:"id"`
 	Related []RelatedItem `json:"related"`
 }
 
@@ -129,11 +131,12 @@ func QueryTopNav(ctx context.Context) ([]NavItem, error) {
 	}
 
 	q := `SELECT
+		t.id,
 		t.label,
 		t.slug,
 		COALESCE(
 			jsonb_agg(
-				jsonb_build_object('label', rt.label, 'slug', rt.slug)
+				jsonb_build_object('id', rt.id, 'label', rt.label, 'slug', rt.slug)
 			) FILTER (WHERE rt.id IS NOT NULL),
 			'[]'::jsonb
 		) AS related
@@ -142,18 +145,6 @@ func QueryTopNav(ctx context.Context) ([]NavItem, error) {
 	WHERE t.parent_tag_id = '102982'
 	GROUP BY t.id, t.label, t.slug
 	ORDER BY t.id ASC`
-	//q := `SELECT
-	//	t.label,
-	//	t.slug,
-	//	COALESCE(
-	//		ARRAY_AGG(rt.slug) FILTER (WHERE rt.slug IS NOT NULL),
-	//		ARRAY[]::TEXT[]
-	//	) AS related
-	//FROM tags AS t
-	//LEFT JOIN tags AS rt ON rt.parent_tag_id = t.id
-	//WHERE t.parent_tag_id = '102982'
-	//GROUP BY t.id, t.label, t.slug
-	//ORDER BY t.id ASC`
 
 	rows, err := Pool.Query(ctx, q)
 	if err != nil {
@@ -166,11 +157,10 @@ func QueryTopNav(ctx context.Context) ([]NavItem, error) {
 		var item NavItem
 		var relatedJSON []byte
 
-		err := rows.Scan(&item.Label, &item.Slug, &relatedJSON)
+		err := rows.Scan(&item.ID, &item.Label, &item.Slug, &relatedJSON)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan navigation item: %w", err)
 		}
-
 
 		// Parse the JSON array of related items
 		if len(relatedJSON) > 0 && string(relatedJSON) != "[]" {
