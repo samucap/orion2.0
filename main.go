@@ -13,6 +13,7 @@ import (
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/joho/godotenv"
 	"github.com/samucap/orion2.0/handlers"
+	"github.com/samucap/orion2.0/internal/cache"
 	"github.com/samucap/orion2.0/internal/db"
 	"github.com/samucap/orion2.0/middleware"
 )
@@ -29,15 +30,20 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
-	// Initialize database connection
+	// Initialize database connection (optional)
 	dbPool, err := db.InitDB()
 	if err != nil {
-		slog.Error("Failed to initialize database", "error", err)
-		os.Exit(1)
+		slog.Warn("Failed to initialize database, continuing without DB features", "error", err)
+		dbPool = nil
+	} else {
+		defer dbPool.Close()
+		slog.Info("Database connection established")
 	}
-	defer dbPool.Close()
 
-	slog.Info("Database connection established")
+	// Initialize cache
+	eventCache := cache.NewInMemoryCache()
+	handlers.SetCache(eventCache)
+	slog.Info("Cache initialized")
 
 	// Create router
 	r := chi.NewRouter()
@@ -61,7 +67,11 @@ func main() {
 
 	// Routes
 	r.Get("/events", handlers.GetEvents)
+	r.Get("/events-v2", handlers.GetEventsV2)
 	r.Get("/top-nav", handlers.GetTopNav)
+
+	// Cache management endpoint
+	r.Post("/cache/clear", handlers.ClearCache)
 
 	// Health check endpoint
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {

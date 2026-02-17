@@ -1,60 +1,78 @@
 package handlers
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 )
 
-// Event represents an event object
-type Event struct {
-	ID        int    `json:"id"`
-	Title     string `json:"title"`
-	StartDate string `json:"start_date"`
-	Location  string `json:"location"`
-}
-
 // GetEvents handles GET /events endpoint
+// Returns sanitized, render-ready CleanEvent data from Polymarket Gamma API
 func GetEvents(w http.ResponseWriter, r *http.Request) {
-	// TODO: middleware to get required params from wherever url body and stop if required not present
-	// Fetch events from Polymarket API
 	params := r.URL.Query()
 	currCat := params.Get("cat")
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	currOrder := params.Get("order")
+	if currOrder == "" {
+		currOrder = "volume24hr"
+	}
 
+	// Build Polymarket API URL
 	gammaBase := `https://gamma-api.polymarket.com`
-	evPath := `/events?closed=false&active=true&include_chat=false&ascending=false&limit=50&order=volume24hr&related_tags=true`
+	evPath := `/events?closed=false&active=true&archived=false&include_chat=false&ascending=false&limit=50&cyom=false&include_template=false&liquidity_min=500&volume_min=500`
 	if currCat != "" {
 		evPath += "&tag_id=" + currCat
+		if currCat == "100215" {
+			evPath += "&related_tags=true"
+		}
 	}
+
+	evPath += "&order=" + currOrder
 
 	resp, err := http.Get(gammaBase + evPath)
 	if err != nil {
-		http.Error(w, `{"error":"Failed to fetch events from external API"}`, http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":"Failed to fetch events from external API"}`))
 		return
 	}
 	defer resp.Body.Close()
 
-	// Check if the API request was successful
 	if resp.StatusCode != http.StatusOK {
-		http.Error(w, `{"error":"External API returned error"}`, http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(fmt.Sprintf(`{"error":"External API returned status %d"}`, resp.StatusCode)))
 		return
 	}
 
-	// Read the response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		http.Error(w, `{"error":"Failed to read response from external API"}`, http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":"Failed to read response from external API"}`))
 		return
 	}
 
+	// Parse into typed structs
+	var rawEvents []RawGammaEvent
+	if err := json.Unmarshal(body, &rawEvents); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte(fmt.Sprintf(`{"error":"Invalid response from external API: %s"}`, err.Error())))
+		return
+	}
+
+	// Transform each event, filtering out zombie events
+	cleanEvents := make([]CleanEvent, 0, len(rawEvents))
+	for _, raw := range rawEvents {
+		clean := TransformEvent(raw)
+		if clean != nil {
+			cleanEvents = append(cleanEvents, *clean)
+		}
+	}
+
+	// Return render-ready events
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-
-	// Write the raw JSON response from Polymarket API
-	if _, err := w.Write(body); err != nil {
-		// This should rarely happen, but handle it gracefully
-		http.Error(w, `{"error":"Failed to write response"}`, http.StatusInternalServerError)
-		return
-	}
+	json.NewEncoder(w).Encode(cleanEvents)
 }
