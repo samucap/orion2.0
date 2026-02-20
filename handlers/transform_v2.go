@@ -133,10 +133,7 @@ func buildSportsGroupEvent(raw RawGammaEvent, teamsByName map[string]db.PlyMktTe
 		if i >= 10 {
 			break
 		}
-		if mp.price == 0 {
-			continue
-		}
-
+		
 		label := mp.market.GroupItemTitle
 		if label == "" {
 			label = stripEventTitle(mp.market.Question, raw.Title)
