@@ -96,7 +96,7 @@ func TestGroupOutcomeSorting(t *testing.T) {
 	result := handlers.TransformEventV2(rawEvent, map[string]db.PlyMktTeam{}, map[string]db.League{})
 
 	assert.NotNil(t, result)
-	assert.Len(t, result.Outcomes, 5)
+	assert.Len(t, result.Outcomes, 7)
 
 	// Check sorting by probability descending
 	assert.Equal(t, "Second", result.Outcomes[0].Label)
@@ -280,8 +280,8 @@ func TestSportsGroupEventClassification(t *testing.T) {
 	assert.Equal(t, 500000.0, result.TotalVolume)
 	assert.Equal(t, "sports_group", result.DisplayType)
 
-	// Should have 5 outcomes (top 5 by probability, excluding zero probability)
-	assert.Len(t, result.Outcomes, 5)
+	// Should have 6 outcomes (top ranking, all markets included)
+	assert.Len(t, result.Outcomes, 6)
 	assert.Equal(t, "Denver Nuggets", result.Outcomes[0].Label) // Highest probability first
 	assert.Equal(t, 0.20, result.Outcomes[0].Probability)
 	assert.Equal(t, "active", result.Outcomes[0].Status)

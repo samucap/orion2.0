@@ -12,13 +12,13 @@ import (
 func TestZombieMarketDropped(t *testing.T) {
 	// Create a raw event with a single zombie market (price = 1.00)
 	rawEvent := handlers.RawGammaEvent{
-		ID:                  "test-event-1",
-		Title:               "Test Zombie Event",
-		Slug:                "test-zombie-event",
-		Category:            "Crypto",
-		NegRisk:             false,
-		Active:              true,
-		UmaResolutionStatus: nil, // Not disputed
+		ID:                    "test-event-1",
+		Title:                 "Test Zombie Event",
+		Slug:                  "test-zombie-event",
+		Category:              "Crypto",
+		NegRisk:               false,
+		Active:                true,
+		UmaResolutionStatuses: "", // Not disputed
 		Markets: []handlers.RawGammaMarket{
 			{
 				ID:               "market-1",
@@ -44,15 +44,14 @@ func TestZombieMarketDropped(t *testing.T) {
 // is kept (not dropped) because disputed markets should be preserved.
 func TestDisputedMarketKept(t *testing.T) {
 	// Create a raw event with a zombie market but disputed status
-	disputedStatus := "disputed"
 	rawEvent := handlers.RawGammaEvent{
-		ID:                  "test-event-2",
-		Title:               "Test Disputed Event",
-		Slug:                "test-disputed-event",
-		Category:            "Crypto",
-		NegRisk:             false,
-		Active:              true,
-		UmaResolutionStatus: &disputedStatus, // Disputed!
+		ID:                    "test-event-2",
+		Title:                 "Test Disputed Event",
+		Slug:                  "test-disputed-event",
+		Category:              "Crypto",
+		NegRisk:               false,
+		Active:                true,
+		UmaResolutionStatuses: "disputed", // Disputed!
 		Markets: []handlers.RawGammaMarket{
 			{
 				ID:               "market-2",
@@ -82,13 +81,13 @@ func TestDisputedMarketKept(t *testing.T) {
 func TestSportsLayoutWithTeams(t *testing.T) {
 	// Create a raw sports event with two teams
 	rawEvent := handlers.RawGammaEvent{
-		ID:                  "test-event-3",
-		Title:               "Chiefs vs Ravens",
-		Slug:                "chiefs-vs-ravens",
-		Category:            "Sports",
-		NegRisk:             false,
-		Active:              true,
-		UmaResolutionStatus: nil,
+		ID:                    "test-event-3",
+		Title:                 "Chiefs vs Ravens",
+		Slug:                  "chiefs-vs-ravens",
+		Category:              "Sports",
+		NegRisk:               false,
+		Active:                true,
+		UmaResolutionStatuses: "",
 		Markets: []handlers.RawGammaMarket{
 			{
 				ID:               "market-3",
@@ -143,7 +142,7 @@ func TestPollLayoutSorting(t *testing.T) {
 		Category:            "Politics",
 		NegRisk:             true, // negRisk makes it a poll
 		Active:              true,
-		UmaResolutionStatus: nil,
+		UmaResolutionStatus: "",
 		Markets: []handlers.RawGammaMarket{
 			{
 				ID:               "market-biden",
@@ -209,7 +208,7 @@ func TestBinaryLayout(t *testing.T) {
 		Category:            "Crypto",
 		NegRisk:             false,
 		Active:              true,
-		UmaResolutionStatus: nil,
+		UmaResolutionStatus: "",
 		Markets: []handlers.RawGammaMarket{
 			{
 				ID:               "market-5",
@@ -294,14 +293,13 @@ func TestZombieAtLowPrice(t *testing.T) {
 
 // TestAnsweringStatusKept verifies that "answering" status (like disputed) keeps markets.
 func TestAnsweringStatusKept(t *testing.T) {
-	answeringStatus := "answering"
 	rawEvent := handlers.RawGammaEvent{
-		ID:                  "test-event-8",
-		Title:               "Answering Event",
-		Slug:                "answering-event",
-		Category:            "Crypto",
-		Active:              true,
-		UmaResolutionStatus: &answeringStatus,
+		ID:                    "test-event-8",
+		Title:                 "Answering Event",
+		Slug:                  "answering-event",
+		Category:              "Crypto",
+		Active:                true,
+		UmaResolutionStatuses: "answering",
 		Markets: []handlers.RawGammaMarket{
 			{
 				ID:               "market-8",

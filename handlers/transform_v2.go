@@ -57,7 +57,7 @@ func buildSportsEvent(raw RawGammaEvent, teamsByName map[string]db.PlyMktTeam, l
 	// Use enrichment logic to build displayData
 	displayData := EnrichSportsEvent(raw, teamsByName, leaguesBySlug)
 
-	// Calculate stats and status
+	// Calculate stats, status
 	stats := calculateV2Stats(raw.Markets)
 	statusBadge := buildV2StatusBadge(raw, stats)
 
@@ -83,12 +83,18 @@ func buildSportsEvent(raw RawGammaEvent, teamsByName map[string]db.PlyMktTeam, l
 		Image:         image,
 		OriginalImage: originalImage,
 		TotalVolume:   raw.Volume.Float64(),
+		EndDate:       raw.EndDate,
+		Liquidity:     raw.Liquidity.Float64(),
+		Volume24hr:    raw.Volume24hr.Float64(),
 		DisplayType:   "sports",
 		IsLive:        raw.Live, // Use actual live status instead of active
 		StatusBadge:   statusBadge,
 		Stats:         stats,
 		Outcomes:      outcomes,    // Include market data for trading
 		DisplayData:   displayData, // Include enriched display data
+		Score:         raw.Score,
+		Period:        raw.Period,
+		StartTime:     raw.StartTime,
 	}
 }
 
@@ -129,11 +135,7 @@ func buildSportsGroupEvent(raw RawGammaEvent, teamsByName map[string]db.PlyMktTe
 	eventLeague := EventLeagueSlug(raw, leaguesBySlug)
 	evImg := eventImage(raw)
 
-	for i, mp := range marketPrices {
-		if i >= 10 {
-			break
-		}
-		
+	for _, mp := range marketPrices {
 		label := mp.market.GroupItemTitle
 		if label == "" {
 			label = stripEventTitle(mp.market.Question, raw.Title)
@@ -141,18 +143,24 @@ func buildSportsGroupEvent(raw RawGammaEvent, teamsByName map[string]db.PlyMktTe
 
 		team := TeamByLabel(teamsByName, eventLeague, label, raw)
 		outcomes = append(outcomes, V2Outcome{
-			MarketID:         mp.market.ID,
-			Label:            label,
-			Probability:      mp.price,
-			Price:            mp.price,
-			BestBid:          mp.market.BestBid.Float64(),
-			BestAsk:          mp.market.BestAsk.Float64(),
-			Liquidity:        mp.market.Liquidity.Float64(),
-			Volume24hr:       mp.market.Volume24hr.Float64(),
-			Status:           "active",
-			Color:            ResolveTeamColor(team),
-			Image:            ResolveTeamImage(label, team, raw, eventLeague, leaguesBySlug, mp.market.Image, evImg, teamsByName),
-			SportsMarketType: mp.market.SportsMarketType,
+			MarketID:           mp.market.ID,
+			Label:              label,
+			Probability:        mp.price,
+			Price:              mp.price,
+			BestBid:            mp.market.BestBid.Float64(),
+			BestAsk:            mp.market.BestAsk.Float64(),
+			Liquidity:          mp.market.Liquidity.Float64(),
+			Volume24hr:         mp.market.Volume24hr.Float64(),
+			Status:             "active",
+			Color:              ResolveTeamColor(team),
+			Image:              ResolveTeamImage(label, team, raw, eventLeague, leaguesBySlug, mp.market.Image, evImg, teamsByName),
+			SportsMarketType:   mp.market.SportsMarketType,
+			EndDate:            mp.market.EndDate,
+			GameStartTime:      mp.market.GameStartTime,
+			Volume24hrClob:     mp.market.Volume24hrClob.Float64(),
+			LiquidityClob:      mp.market.LiquidityClob.Float64(),
+			OneDayPriceChange:  mp.market.OneDayPriceChange.Float64(),
+			OneHourPriceChange: mp.market.OneHourPriceChange.Float64(),
 		})
 	}
 
@@ -168,7 +176,7 @@ func buildSportsGroupEvent(raw RawGammaEvent, teamsByName map[string]db.PlyMktTe
 		originalImage = raw.Image
 	}
 
-	// Calculate stats and status
+	// Calculate stats, status
 	stats := calculateV2Stats(raw.Markets)
 	statusBadge := buildV2StatusBadge(raw, stats)
 
@@ -179,12 +187,18 @@ func buildSportsGroupEvent(raw RawGammaEvent, teamsByName map[string]db.PlyMktTe
 		Image:         image,
 		OriginalImage: originalImage,
 		TotalVolume:   raw.Volume.Float64(),
+		EndDate:       raw.EndDate,
+		Liquidity:     raw.Liquidity.Float64(),
+		Volume24hr:    raw.Volume24hr.Float64(),
 		DisplayType:   "sports_group",
 		IsLive:        raw.Live,
 		StatusBadge:   statusBadge,
 		Stats:         stats,
 		Outcomes:      outcomes,
 		DisplayData:   displayData,
+		Score:         raw.Score,
+		Period:        raw.Period,
+		StartTime:     raw.StartTime,
 	}
 }
 
@@ -226,14 +240,7 @@ func buildGroupEvent(raw RawGammaEvent) V2Event {
 	})
 
 	// Take top 5, skip outcomes with zero probability
-	for i, mp := range marketPrices {
-		if i >= 5 {
-			break
-		}
-		if mp.price == 0 {
-			continue // Skip zero probability outcomes
-		}
-
+	for _, mp := range marketPrices {
 		label := mp.market.GroupItemTitle
 		if label == "" {
 			// Fallback: strip event title from question
@@ -241,12 +248,18 @@ func buildGroupEvent(raw RawGammaEvent) V2Event {
 		}
 
 		outcomes = append(outcomes, V2Outcome{
-			MarketID:    mp.market.ID,
-			Label:       label,
-			Probability: mp.price,
-			Status:      mp.status,
-			Color:       "",
-			Image:       mp.market.Image,
+			MarketID:           mp.market.ID,
+			Label:              label,
+			Probability:        mp.price,
+			Status:             mp.status,
+			Color:              "",
+			Image:              mp.market.Image,
+			EndDate:            mp.market.EndDate,
+			GameStartTime:      mp.market.GameStartTime,
+			Volume24hrClob:     mp.market.Volume24hrClob.Float64(),
+			LiquidityClob:      mp.market.LiquidityClob.Float64(),
+			OneDayPriceChange:  mp.market.OneDayPriceChange.Float64(),
+			OneHourPriceChange: mp.market.OneHourPriceChange.Float64(),
 		})
 	}
 
@@ -267,11 +280,17 @@ func buildGroupEvent(raw RawGammaEvent) V2Event {
 		Image:         image,
 		OriginalImage: image, // Group events don't have enriched images
 		TotalVolume:   raw.Volume.Float64(),
+		EndDate:       raw.EndDate,
+		Liquidity:     raw.Liquidity.Float64(),
+		Volume24hr:    raw.Volume24hr.Float64(),
 		DisplayType:   "group",
 		IsLive:        raw.Live,
 		StatusBadge:   statusBadge,
 		Stats:         stats,
 		Outcomes:      outcomes,
+		Score:         raw.Score,
+		Period:        raw.Period,
+		StartTime:     raw.StartTime,
 	}
 }
 
@@ -304,17 +323,23 @@ func buildBinaryEvent(raw RawGammaEvent) V2Event {
 		}
 
 		outcomes = append(outcomes, V2Outcome{
-			MarketID:    market.ID,
-			Label:       label,
-			Probability: price,
-			Price:       price,
-			BestBid:     market.BestBid.Float64(),
-			BestAsk:     market.BestAsk.Float64(),
-			Liquidity:   market.Liquidity.Float64(),
-			Volume24hr:  market.Volume24hr.Float64(),
-			Status:      status,
-			Color:       "",
-			Image:       market.Image,
+			MarketID:           market.ID,
+			Label:              label,
+			Probability:        price,
+			Price:              price,
+			BestBid:            market.BestBid.Float64(),
+			BestAsk:            market.BestAsk.Float64(),
+			Liquidity:          market.Liquidity.Float64(),
+			Volume24hr:         market.Volume24hr.Float64(),
+			Status:             status,
+			Color:              "",
+			Image:              market.Image,
+			EndDate:            market.EndDate,
+			GameStartTime:      market.GameStartTime,
+			Volume24hrClob:     market.Volume24hrClob.Float64(),
+			LiquidityClob:      market.LiquidityClob.Float64(),
+			OneDayPriceChange:  market.OneDayPriceChange.Float64(),
+			OneHourPriceChange: market.OneHourPriceChange.Float64(),
 		})
 	}
 
@@ -335,11 +360,17 @@ func buildBinaryEvent(raw RawGammaEvent) V2Event {
 		Image:         image,
 		OriginalImage: image, // Binary events don't have enriched images
 		TotalVolume:   raw.Volume.Float64(),
+		EndDate:       raw.EndDate,
+		Liquidity:     raw.Liquidity.Float64(),
+		Volume24hr:    raw.Volume24hr.Float64(),
 		DisplayType:   "binary",
 		IsLive:        raw.Live,
 		StatusBadge:   statusBadge,
 		Stats:         stats,
 		Outcomes:      outcomes,
+		Score:         raw.Score,
+		Period:        raw.Period,
+		StartTime:     raw.StartTime,
 	}
 }
 
@@ -387,16 +418,14 @@ func calculateV2Stats(markets []RawGammaMarket) V2EventStats {
 func buildV2StatusBadge(raw RawGammaEvent, stats V2EventStats) string {
 	// Check for disputed status first
 	if isV2EventDisputed(raw) {
-		return "DISPUTED"
-	}
-
-	// Check for high volume (HOT) - using the formatted volume
-	totalVolume := 0.0
-	for _, m := range raw.Markets {
-		totalVolume += m.Volume24hr.Float64()
-	}
-	if totalVolume > 500000 {
-		return "HOT"
+		var currStatus string
+		if raw.UmaResolutionStatus != "" {
+			currStatus = raw.UmaResolutionStatus
+		} else if raw.UmaResolutionStatuses != "" {
+			statuses := strings.Split(raw.UmaResolutionStatuses, "\\")
+			currStatus = statuses[len(statuses)-1]
+		}
+		return fmt.Sprintf("DISPUTED %s", currStatus)
 	}
 
 	return ""
@@ -404,23 +433,18 @@ func buildV2StatusBadge(raw RawGammaEvent, stats V2EventStats) string {
 
 // isV2EventDisputed checks if event has disputed status
 func isV2EventDisputed(raw RawGammaEvent) bool {
-	if raw.UmaResolutionStatus != nil {
-		status := strings.ToLower(*raw.UmaResolutionStatus)
-		return status == "disputed" || status == "answering" || status == "pending"
-	}
-	return false
+	statuses := strings.ToLower(raw.UmaResolutionStatuses)
+	return strings.Contains(statuses, "disputed") || strings.Contains(statuses, "answering") || strings.Contains(statuses, "pending")
 }
 
 // buildSportsOutcomes creates V2Outcome array for sports events with market trading data
 func buildSportsOutcomes(raw RawGammaEvent, teamsByName map[string]db.PlyMktTeam, leaguesBySlug map[string]db.League) []V2Outcome {
 	// Find the main market (highest liquidity)
 	var mainMarket *RawGammaMarket
-	maxLiquidity := 0.0
-	for i := range raw.Markets {
-		liq := raw.Markets[i].Liquidity.Float64()
-		if liq > maxLiquidity {
-			maxLiquidity = liq
-			mainMarket = &raw.Markets[i]
+	for _, m := range raw.Markets {
+		if m.SportsMarketType == "moneyline" {
+			mainMarket = &m
+			break
 		}
 	}
 
@@ -462,17 +486,23 @@ func buildSportsOutcomes(raw RawGammaEvent, teamsByName map[string]db.PlyMktTeam
 			status = "resolved"
 		}
 		v2Outcomes = append(v2Outcomes, V2Outcome{
-			MarketID:    mainMarket.ID,
-			Label:       label,
-			Probability: price,
-			Price:       price,
-			BestBid:     mainMarket.BestBid.Float64(),
-			BestAsk:     mainMarket.BestAsk.Float64(),
-			Liquidity:   mainMarket.Liquidity.Float64(),
-			Volume24hr:  mainMarket.Volume24hr.Float64(),
-			Status:      status,
-			Color:       ResolveTeamColor(team),
-			Image:       ResolveTeamImage(label, team, raw, eventLeague, leaguesBySlug, mainMarket.Image, evImg, teamsByName),
+			MarketID:           mainMarket.ID,
+			Label:              label,
+			Probability:        price,
+			Price:              price,
+			BestBid:            mainMarket.BestBid.Float64(),
+			BestAsk:            mainMarket.BestAsk.Float64(),
+			Liquidity:          mainMarket.Liquidity.Float64(),
+			Volume24hr:         mainMarket.Volume24hr.Float64(),
+			Status:             status,
+			Color:              ResolveTeamColor(team),
+			Image:              ResolveTeamImage(label, team, raw, eventLeague, leaguesBySlug, mainMarket.Image, evImg, teamsByName),
+			EndDate:            mainMarket.EndDate,
+			GameStartTime:      mainMarket.GameStartTime,
+			Volume24hrClob:     mainMarket.Volume24hrClob.Float64(),
+			LiquidityClob:      mainMarket.LiquidityClob.Float64(),
+			OneDayPriceChange:  mainMarket.OneDayPriceChange.Float64(),
+			OneHourPriceChange: mainMarket.OneHourPriceChange.Float64(),
 		})
 	}
 
@@ -499,18 +529,24 @@ func buildMoneylineOutcomes(raw RawGammaEvent, teamsByName map[string]db.PlyMktT
 			status = "resolved"
 		}
 		v2Outcomes = append(v2Outcomes, V2Outcome{
-			MarketID:         m.ID,
-			Label:            label,
-			Probability:      yesPrice,
-			Price:            yesPrice,
-			BestBid:          m.BestBid.Float64(),
-			BestAsk:          m.BestAsk.Float64(),
-			Liquidity:        m.Liquidity.Float64(),
-			Volume24hr:       m.Volume24hr.Float64(),
-			Status:           status,
-			Color:            ResolveTeamColor(team),
-			Image:            ResolveTeamImage(label, team, raw, eventLeague, leaguesBySlug, m.Image, evImg, teamsByName),
-			SportsMarketType: m.SportsMarketType,
+			MarketID:           m.ID,
+			Label:              label,
+			Probability:        yesPrice,
+			Price:              yesPrice,
+			BestBid:            m.BestBid.Float64(),
+			BestAsk:            m.BestAsk.Float64(),
+			Liquidity:          m.Liquidity.Float64(),
+			Volume24hr:         m.Volume24hr.Float64(),
+			Status:             status,
+			Color:              ResolveTeamColor(team),
+			Image:              ResolveTeamImage(label, team, raw, eventLeague, leaguesBySlug, m.Image, evImg, teamsByName),
+			SportsMarketType:   m.SportsMarketType,
+			EndDate:            m.EndDate,
+			GameStartTime:      m.GameStartTime,
+			Volume24hrClob:     m.Volume24hrClob.Float64(),
+			LiquidityClob:      m.LiquidityClob.Float64(),
+			OneDayPriceChange:  m.OneDayPriceChange.Float64(),
+			OneHourPriceChange: m.OneHourPriceChange.Float64(),
 		})
 	}
 	return v2Outcomes

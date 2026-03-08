@@ -13,6 +13,9 @@ import (
 	"github.com/samucap/orion2.0/internal/db"
 )
 
+//TODO: need to return market and events objects withtout much manipulation, because now that I think about it,
+// data returned can be used for subsequent routes so no need to manipulate it here
+
 // Package-level cache instance (initialized in main.go)
 var eventCache cache.Cache
 
@@ -58,7 +61,6 @@ func GetEventsV2(w http.ResponseWriter, r *http.Request) {
 	active := getParam("active", "true")
 	closed := getParam("closed", "false")
 	volMin := getParam("volumeMin", "500")
-	liqMin := getParam("liquidityMin", "500")
 
 	// Optional params — only appended to Gamma URL if provided
 	offset := params.Get("offset")
@@ -72,10 +74,13 @@ func GetEventsV2(w http.ResponseWriter, r *http.Request) {
 	evPath := fmt.Sprintf(
 		"/events?archived=false&include_chat=false&cyom=false&include_template=false"+
 			"&active=%s&closed=%s&ascending=%s&limit=%s"+
-			"&order=%s&volume_min=%s&liquidity_min=%s",
+			"&order=%s&volume_min=%s",
 		active, closed, ascending, limit,
-		order, volMin, liqMin,
+		order, volMin,
 	)
+	if liqMin := params.Get("liquidityMin"); liqMin != "" {
+		evPath += "&liquidity_min=" + liqMin
+	}
 
 	if tagID != "" {
 		evPath += "&tag_id=" + tagID
@@ -132,145 +137,49 @@ func GetEventsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx := context.Background()
+
 	// Load leagues map (cached for performance)
-	leaguesBySlug, err := db.QueryAllLeagues(context.Background())
+	leaguesBySlug, err := db.QueryAllLeagues(ctx)
 	if err != nil {
-		// Log error but don't fail - continue with empty map
 		leaguesBySlug = map[string]db.League{}
 	}
 
-	// Alias tag slugs -> DB league slugs so EventLeagueSlug resolves them
-	tagLeagueAliases := map[string]string{
-		"fifa":              "fif",
-		"fifa-world-cup":    "fif",
-		"2026-fifa-world-cup": "fif",
-		"champions-league":  "ucl",
-		"uefa":              "ucl",
-		"europa-league":     "uel",
-		"la-liga":           "lal",
-		"serie-a":          "sea",
-		"bundesliga":        "bun",
-		"ligue-1":           "fl1",
-		"cs2":               "csgo",
-		"val":               "valorant",
-	}
-	for tagSlug, dbSlug := range tagLeagueAliases {
-		if league, exists := leaguesBySlug[dbSlug]; exists {
-			if _, already := leaguesBySlug[tagSlug]; !already {
-				leaguesBySlug[tagSlug] = league
-			}
-		}
+	// 1. Get sports tags from DB
+	sportsTags, err := db.QuerySportsTagSlugs(ctx)
+	if err != nil {
+		sportsTags = map[string]bool{"sports": true, "esports": true, "soccer": true, "football": true} // fallback
 	}
 
-	// Load teams by league for sports events (loads ALL teams for each league, not just named ones)
-	teamsByName := make(map[string]db.PlyMktTeam)
+	// 2. Identify sports events and collect team names AND league slugs in a single pass
+	var teamNames []string
 	leagueSlugs := make(map[string]bool)
-
-	// Tag slug to DB league mapping for known mismatches
-	tagToDBLeagues := map[string][]string{
-		"fifa":               {"fif"},
-		"fifa-world-cup":     {"fif"},
-		"2026-fifa-world-cup": {"fif"},
-		"champions-league":   {"ucl"},
-		"uefa":               {"ucl"},
-		"europa-league":      {"uel"},
-		"la-liga":            {"lal"},
-		"serie-a":           {"sea"},
-		"bundesliga":         {"bun"},
-		"ligue-1":            {"fl1"},
-		"soccer":             {"epl", "ucl", "fif"},
-		"cs2":                {"csgo"},
-		"val":                {"valorant"},
-		"esports":            {"csgo", "lol", "dota2", "rl", "valorant"},
-	}
 
 	for _, raw := range rawEvents {
 		isSports := false
-		for _, tag := range raw.Tags {
-			if tag.Slug == "sports" || tag.Slug == "esports" {
-				isSports = true
-				break
+		if raw.Category == "Sports" || raw.GameID.String() != "" {
+			isSports = true
+		} else {
+			for _, tag := range raw.Tags {
+				if sportsTags[tag.Slug] {
+					isSports = true
+					break
+				}
 			}
 		}
-		if !isSports {
-			isSports = raw.GameID.String() != "" || raw.Category == "Sports"
-		}
+
 		if !isSports {
 			continue
 		}
-		// Collect unique league slugs from sports events
+
+		// Collect unique league slugs
 		for _, tag := range raw.Tags {
-			if tag.Slug != "" {
+			if tag.Slug != "" && tag.Slug != "sports" && tag.Slug != "esports" {
 				leagueSlugs[tag.Slug] = true
 			}
 		}
-	}
 
-	// Load teams for each detected league (skip generic "sports" tag)
-	ctx := context.Background()
-	for leagueSlug := range leagueSlugs {
-		if leagueSlug == "sports" {
-			continue // Skip generic sports tag that pollutes the map
-		}
-
-		// Query for the tag slug directly
-		leagueTeams, err := db.QueryTeamsByLeague(ctx, leagueSlug)
-		if err != nil {
-			// Log error but don't fail - continue with empty map
-			continue
-		}
-
-		// Also query any mapped DB leagues for this tag
-		if mappedLeagues, exists := tagToDBLeagues[leagueSlug]; exists {
-			for _, mappedLeague := range mappedLeagues {
-				mappedTeams, err := db.QueryTeamsByLeague(ctx, mappedLeague)
-				if err == nil {
-					// Merge mapped teams into leagueTeams
-					for k, v := range mappedTeams {
-						leagueTeams[k] = v
-					}
-				}
-			}
-		}
-
-		// Merge into main map with dual composite keys: tag-slug prefix and DB-league prefix
-		for k, v := range leagueTeams {
-			teamsByName[k] = v // Keep original DB keys
-
-			// Also add composite key with tag slug as prefix
-			// This allows TeamByLabel("fifa", "Argentina") to find "fifa|argentina"
-			if strings.Contains(k, "|") {
-				// If it's already a composite key, replace the league part with tag slug
-				parts := strings.SplitN(k, "|", 2)
-				if len(parts) == 2 {
-					tagCompositeKey := leagueSlug + "|" + parts[1]
-					teamsByName[tagCompositeKey] = v
-				}
-			} else {
-				// For plain keys, add composite key with tag slug
-				tagCompositeKey := leagueSlug + "|" + k
-				teamsByName[tagCompositeKey] = v
-			}
-		}
-	}
-
-	// Collect team names from sports/esports events (same condition as classification + esports tag)
-	var teamNames []string
-	for _, raw := range rawEvents {
-		isSports := false
-		for _, tag := range raw.Tags {
-			if tag.Slug == "sports" || tag.Slug == "esports" {
-				isSports = true
-				break
-			}
-		}
-		if !isSports {
-			isSports = raw.GameID.String() != "" || raw.Category == "Sports"
-		}
-		if !isSports {
-			continue
-		}
-		// Collect from groupItemTitle, raw.Teams, and outcome labels (trimmed)
+		// Collect names from sports events
 		for _, market := range raw.Markets {
 			if s := strings.TrimSpace(market.GroupItemTitle); s != "" {
 				teamNames = append(teamNames, s)
@@ -295,7 +204,21 @@ func GetEventsV2(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	// Dedupe by normalized key (case-insensitive, UTF-8-safe) so DB and TeamByLabel match
+
+	// Convert league map to slice
+	var targetLeagues []string
+	for slug := range leagueSlugs {
+		targetLeagues = append(targetLeagues, slug)
+	}
+
+	// 3. Batch query ALL teams in the detected leagues (required for TeamByLabel fuzzy matching)
+	teamsByName, err := db.QueryTeamsByLeagues(ctx, targetLeagues)
+	if err != nil {
+		teamsByName = map[string]db.PlyMktTeam{}
+	}
+
+	// 4. Also batch query the specific detected names as a fallback (for cross-league teams)
+	// Dedupe by normalized key first
 	uniqueByKey := make(map[string]string)
 	for _, n := range teamNames {
 		n = strings.TrimSpace(n)
@@ -312,7 +235,7 @@ func GetEventsV2(w http.ResponseWriter, r *http.Request) {
 		teamNames = append(teamNames, n)
 	}
 
-	// Add suffix variants for multi-word names (e.g., "Colorado Avalanche" -> also query "Avalanche")
+	// Add suffix variants for multi-word names
 	var suffixNames []string
 	for _, n := range teamNames {
 		words := strings.Fields(n)
@@ -325,15 +248,10 @@ func GetEventsV2(w http.ResponseWriter, r *http.Request) {
 	}
 	teamNames = append(teamNames, suffixNames...)
 
-	// Query additional teams by name (supplement league-based loading)
-	nameBasedTeams, err := db.QueryTeamsByNamesBatched(context.Background(), teamNames, 250)
-	if err != nil {
-		// Log error but don't fail - continue with empty map
-		nameBasedTeams = map[string]db.PlyMktTeam{}
-	}
-	// Merge name-based teams (these take precedence over league-based ones for same keys)
-	for k, v := range nameBasedTeams {
-		teamsByName[k] = v
+	if nameBasedTeams, err := db.QueryTeamsByNamesBatched(ctx, teamNames, 250); err == nil {
+		for k, v := range nameBasedTeams {
+			teamsByName[k] = v
+		}
 	}
 
 	// Transform each event using V2 logic with caching

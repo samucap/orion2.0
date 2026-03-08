@@ -83,10 +83,7 @@ func filterZombieMarkets(raw RawGammaEvent) []RawGammaMarket {
 
 // isEventDisputed checks if the event has a disputed or answering UMA status.
 func isEventDisputed(raw RawGammaEvent) bool {
-	if raw.UmaResolutionStatus == nil {
-		return false
-	}
-	status := strings.ToLower(*raw.UmaResolutionStatus)
+	status := strings.ToLower(raw.UmaResolutionStatuses)
 	return strings.Contains(status, "disputed") || strings.Contains(status, "answering")
 }
 

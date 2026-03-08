@@ -7,7 +7,7 @@ import (
 	"github.com/samucap/orion2.0/internal/db"
 )
 
-func main() {
+func logoTest() {
 	fmt.Println("🧪 Testing Team Logo Resolution...")
 
 	// Test 1: Abbreviation fallback (NHL)

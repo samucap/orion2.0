@@ -101,32 +101,53 @@ type RawGammaMarket struct {
 	SportsMarketType string    `json:"sportsMarketType"`
 	Active           bool      `json:"active"`
 	Closed           bool      `json:"closed"`
+
+	// Additional trading data
+	EndDate            string    `json:"endDate"`
+	GameStartTime      string    `json:"gameStartTime"`
+	Volume24hrClob     FlexFloat `json:"volume24hrClob"`
+	LiquidityClob      FlexFloat `json:"liquidityClob"`
+	OneDayPriceChange  FlexFloat `json:"oneDayPriceChange"`
+	OneHourPriceChange FlexFloat `json:"oneHourPriceChange"`
+	LastTradePrice     FlexFloat `json:"lastTradePrice"`
+	ClosedTime         string    `json:"closedTime"`
+	FinishedTimestamp  string    `json:"finishedTimestamp"`
 }
 
 // RawGammaEvent represents an event from the Polymarket Gamma API.
 type RawGammaEvent struct {
-	ID                  string           `json:"id"`
-	Title               string           `json:"title"`
-	Slug                string           `json:"slug"`
-	Category            string           `json:"category"`
-	NegRisk             bool             `json:"negRisk"`
-	Active              bool             `json:"active"`
-	UmaResolutionStatus *string          `json:"umaResolutionStatus"` // Nullable
-	Markets             []RawGammaMarket `json:"markets"`
-	Image               string           `json:"image"`
-	Icon                string           `json:"icon"`
-	Description         string           `json:"description"`
-	Volume              FlexFloat        `json:"volume"`
-	Teams               []RawGammaTeam   `json:"teams"`
-	GameID              FlexString       `json:"gameId"`
-	Liquidity           FlexFloat        `json:"liquidity"`
-	Tags                []RawGammaTag    `json:"tags"`
+	ID                    string           `json:"id"`
+	Title                 string           `json:"title"`
+	Slug                  string           `json:"slug"`
+	Category              string           `json:"category"`
+	NegRisk               bool             `json:"negRisk"`
+	Active                bool             `json:"active"`
+	UmaResolutionStatuses string           `json:"umaResolutionStatuses,omitempty"` // Nullable
+	UmaResolutionStatus   string           `json:"umaResolutionStatus,omitempty"`   // Nullable
+	Markets               []RawGammaMarket `json:"markets"`
+	Image                 string           `json:"image"`
+	Icon                  string           `json:"icon"`
+	Description           string           `json:"description"`
+	Volume                FlexFloat        `json:"volume"`
+	Volume24hr            FlexFloat        `json:"volume24hr"`
+	Teams                 []RawGammaTeam   `json:"teams"`
+	GameID                FlexString       `json:"gameId"`
+	Liquidity             FlexFloat        `json:"liquidity"`
+	Tags                  []RawGammaTag    `json:"tags"`
+
+	// Dates and lifecycle
+	EndDate    string `json:"endDate"`
+	ClosedTime string `json:"closedTime"`
 
 	// Live game status (from API response)
-	Live   bool   `json:"live"`   // Whether game is currently broadcasting
-	Ended  bool   `json:"ended"`  // Whether game has ended
-	Score  string `json:"score"`  // Current score, e.g., "49-67"
-	Period string `json:"period"` // Current period, e.g., "FT", "2H"
+	Live           bool      `json:"live"`   // Whether game is currently broadcasting
+	Ended          bool      `json:"ended"`  // Whether game has ended
+	Score          string    `json:"score"`  // Current score, e.g., "49-67"
+	Period         string    `json:"period"` // Current period, e.g., "FT", "2H"
+	LiquidityClob  FlexFloat `json:"liquidityClob"`
+	Volume24hrClob FlexFloat `json:"volume24hrClob"`
+	StartDate      string    `json:"startDate"`
+	StartTime      string    `json:"startTime"`
 }
 
 // RawGammaTeam represents a team from the Polymarket Gamma API teams field.
@@ -163,7 +184,12 @@ type CleanEvent struct {
 	Stats EventStats `json:"stats"`
 
 	// Pre-Sorted Display Data
-	DisplayData DisplayData `json:"displayData"`
+	DisplayData       DisplayData `json:"displayData"`
+	Score             string      `json:"score,omitempty"`
+	Period            string      `json:"period,omitempty"`
+	FinishedTimestamp string      `json:"finishedTimestamp,omitempty"`
+	Volume24hrClob    float64     `json:"volume24hrClob,omitempty"`
+	Liquidity         float64     `json:"liquidity,omitempty"`
 }
 
 // EventStats contains trading metrics for the event.
@@ -221,6 +247,11 @@ type V2Event struct {
 	TotalVolume   float64 `json:"totalVolume"`
 	DisplayType   string  `json:"displayType"` // "binary" | "group" | "sports"
 
+	// Event-level trading data
+	EndDate    string  `json:"endDate,omitempty"`
+	Liquidity  float64 `json:"liquidity"`
+	Volume24hr float64 `json:"volume24hr"`
+
 	// Status & Activity
 	IsLive      bool   `json:"isLive"`      // Whether event is currently active
 	StatusBadge string `json:"statusBadge"` // "HOT", "DISPUTED", or ""
@@ -231,6 +262,15 @@ type V2Event struct {
 	// Market Data
 	Outcomes    []V2Outcome    `json:"outcomes"`
 	DisplayData *V2DisplayData `json:"displayData,omitempty"`
+
+	// Additional event-level data
+	Score             string  `json:"score,omitempty"`
+	Period            string  `json:"period,omitempty"`
+	FinishedTimestamp string  `json:"finishedTimestamp,omitempty"`
+	Volume24hrClob    float64 `json:"volume24hrClob,omitempty"`
+	LiquidityClob     float64 `json:"liquidityClob,omitempty"`
+	StartDate         string  `json:"startDate,omitempty"`
+	StartTime         string  `json:"startTime,omitempty"`
 }
 
 type V2EventStats struct {
@@ -252,6 +292,16 @@ type V2Outcome struct {
 	Color            string  `json:"color"`
 	Image            string  `json:"image"`
 	SportsMarketType string  `json:"sportsMarketType,omitempty"`
+
+	// Additional market-level trading data
+	EndDate            string  `json:"endDate,omitempty"`
+	GameStartTime      string  `json:"gameStartTime,omitempty"`
+	Volume24hrClob     float64 `json:"volume24hrClob,omitempty"`
+	LiquidityClob      float64 `json:"liquidityClob,omitempty"`
+	OneDayPriceChange  float64 `json:"oneDayPriceChange"`
+	OneHourPriceChange float64 `json:"oneHourPriceChange"`
+	LastTradePrice     float64 `json:"lastTradePrice"`
+	Spread             float64 `json:"spread"`
 }
 
 type V2DisplayData struct {

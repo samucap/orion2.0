@@ -422,6 +422,129 @@ func QueryTeamsByLeague(ctx context.Context, leagueSlug string) (map[string]PlyM
 	return teamsMap, nil
 }
 
+// QueryTeamsByLeagues returns a map of teams keyed by lowercase name, abbreviation, and alias
+// for teams in any of the provided league slugs (automatically resolves tag slugs like "fifa" to "fif")
+func QueryTeamsByLeagues(ctx context.Context, leagues []string) (map[string]PlyMktTeam, error) {
+	if Pool == nil {
+		return map[string]PlyMktTeam{}, nil
+	}
+
+	if len(leagues) == 0 {
+		return map[string]PlyMktTeam{}, nil
+	}
+
+	// Tag slug to DB league mapping for known mismatches
+	tagToDBLeagues := map[string][]string{
+		"fifa":                {"fif"},
+		"fifa-world-cup":      {"fif"},
+		"2026-fifa-world-cup": {"fif"},
+		"champions-league":    {"ucl"},
+		"uefa":                {"ucl"},
+		"europa-league":       {"uel"},
+		"la-liga":             {"lal"},
+		"serie-a":             {"sea"},
+		"bundesliga":          {"bun"},
+		"ligue-1":             {"fl1"},
+		"soccer":              {"epl", "ucl", "fif"},
+		"cs2":                 {"csgo"},
+		"val":                 {"valorant"},
+		"esports":             {"csgo", "lol", "dota2", "rl", "valorant"},
+	}
+
+	// Normalize leagues and expand to mapped DB leagues
+	normalizedLeagues := make([]string, 0, len(leagues))
+	seen := make(map[string]bool)
+	tagToDbMappings := make(map[string]string) // Needed for duplicating keys
+
+	for _, l := range leagues {
+		k := strings.ToLower(strings.TrimSpace(l))
+		if k == "" {
+			continue
+		}
+
+		if !seen[k] {
+			seen[k] = true
+			normalizedLeagues = append(normalizedLeagues, k)
+		}
+
+		// Map and include expanded DB leagues
+		if mapped, ok := tagToDBLeagues[k]; ok {
+			for _, m := range mapped {
+				if !seen[m] {
+					seen[m] = true
+					normalizedLeagues = append(normalizedLeagues, m)
+				}
+				// e.g. "fif" maps to "fifa"
+				tagToDbMappings[m] = k
+			}
+		}
+	}
+
+	if len(normalizedLeagues) == 0 {
+		return map[string]PlyMktTeam{}, nil
+	}
+
+	query := `
+		SELECT id, name, league, logo, abbreviation, alias, color
+		FROM teams
+		WHERE LOWER(league) = ANY($1)`
+
+	rows, err := Pool.Query(ctx, query, normalizedLeagues)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query teams by leagues: %w", err)
+	}
+	defer rows.Close()
+
+	teamsMap := make(map[string]PlyMktTeam)
+	for rows.Next() {
+		var team PlyMktTeam
+		err := rows.Scan(&team.ID, &team.Name, &team.League, &team.Logo, &team.Abbreviation, &team.Alias, &team.Color)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan team: %w", err)
+		}
+
+		leagueKey := NormalizeTeamKey(team.League)
+		tagSlugForLeague := tagToDbMappings[leagueKey] // "fifa"
+
+		if team.Name != "" {
+			nameKey := NormalizeTeamKey(team.Name)
+			teamsMap[nameKey] = team
+			if leagueKey != "" {
+				teamsMap[leagueKey+"|"+nameKey] = team
+				if tagSlugForLeague != "" {
+					teamsMap[tagSlugForLeague+"|"+nameKey] = team // Duplicate for the tag
+				}
+			}
+		}
+		if team.Abbreviation != "" {
+			abbrevKey := NormalizeTeamKey(team.Abbreviation)
+			teamsMap[abbrevKey] = team
+			if leagueKey != "" {
+				teamsMap[leagueKey+"|"+abbrevKey] = team
+				if tagSlugForLeague != "" {
+					teamsMap[tagSlugForLeague+"|"+abbrevKey] = team // Duplicate for the tag
+				}
+			}
+		}
+		if team.Alias != "" {
+			aliasKey := NormalizeTeamKey(team.Alias)
+			teamsMap[aliasKey] = team
+			if leagueKey != "" {
+				teamsMap[leagueKey+"|"+aliasKey] = team
+				if tagSlugForLeague != "" {
+					teamsMap[tagSlugForLeague+"|"+aliasKey] = team // Duplicate for the tag
+				}
+			}
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating teams: %w", err)
+	}
+
+	return teamsMap, nil
+}
+
 // QueryLeagueBySport returns league metadata for a specific sport slug
 func QueryLeagueBySport(ctx context.Context, sportSlug string) (*League, error) {
 	if Pool == nil {
@@ -474,5 +597,60 @@ func QueryAllLeagues(ctx context.Context) (map[string]League, error) {
 		return nil, fmt.Errorf("error iterating leagues: %w", err)
 	}
 
+	// Alias tag slugs -> DB league slugs so EventLeagueSlug resolves them and knows the logo template
+	tagLeagueAliases := map[string]string{
+		"fifa":                "fif",
+		"fifa-world-cup":      "fif",
+		"2026-fifa-world-cup": "fif",
+		"champions-league":    "ucl",
+		"uefa":                "ucl",
+		"europa-league":       "uel",
+		"la-liga":             "lal",
+		"serie-a":             "sea",
+		"bundesliga":          "bun",
+		"ligue-1":             "fl1",
+		"cs2":                 "csgo",
+		"val":                 "valorant",
+	}
+	for tagSlug, dbSlug := range tagLeagueAliases {
+		if league, exists := leaguesMap[dbSlug]; exists {
+			if _, already := leaguesMap[tagSlug]; !already {
+				leaguesMap[tagSlug] = league
+			}
+		}
+	}
+
 	return leaguesMap, nil
+}
+
+// QuerySportsTagSlugs returns a set of tag slugs whose parent_tag_id = 1
+// (the "Sports" root tag). Used to identify sports events from their tags
+// without hardcoding league/sport slugs in the handler.
+func QuerySportsTagSlugs(ctx context.Context) (map[string]bool, error) {
+	if Pool == nil {
+		return map[string]bool{}, nil
+	}
+
+	q := `SELECT slug FROM tags WHERE parent_tag_id = '1' AND slug IS NOT NULL AND slug != ''`
+
+	rows, err := Pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query sports tag slugs: %w", err)
+	}
+	defer rows.Close()
+
+	slugs := make(map[string]bool)
+	for rows.Next() {
+		var slug string
+		if err := rows.Scan(&slug); err != nil {
+			return nil, fmt.Errorf("failed to scan sports tag slug: %w", err)
+		}
+		slugs[slug] = true
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating sports tag slugs: %w", err)
+	}
+
+	return slugs, nil
 }
