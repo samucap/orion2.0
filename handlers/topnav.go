@@ -10,15 +10,23 @@ import (
 
 // RelatedItem represents a related navigation item
 type RelatedItem struct {
-	Label string `json:"label"`
-	Slug  string `json:"slug"`
+	Label        string  `json:"label"`
+	Slug         string  `json:"slug"`
+	TotalVol     float64 `json:"total_vol"`
+	TotalVol24hr float64 `json:"total_vol_24hr"`
+	TotalLiq     float64 `json:"total_liq"`
+	TotalMarkets int     `json:"total_markets"`
 }
 
 // NavItem represents a navigation item
 type NavItem struct {
-	Label   string        `json:"label"`
-	Slug    string        `json:"slug"`
-	Related []RelatedItem `json:"related"`
+	Label        string        `json:"label"`
+	Slug         string        `json:"slug"`
+	Related      []RelatedItem `json:"related"`
+	TotalVol     float64       `json:"total_vol"`
+	TotalVol24hr float64       `json:"total_vol_24hr"`
+	TotalLiq     float64       `json:"total_liq"`
+	TotalMarkets int           `json:"total_markets"`
 }
 
 // GetTopNav handles GET /top-nav endpoint
@@ -26,7 +34,8 @@ func GetTopNav(w http.ResponseWriter, r *http.Request) {
 	// Get database connection from context (set in main)
 	// For now, we'll use stubbed data, but the structure is ready for real DB queries
 
-	navItems, err := db.QueryTopNav(r.Context())
+	cat := r.URL.Query().Get("cat")
+	navItems, err := db.QueryTopNav(r.Context(), cat)
 	if err != nil {
 		// Log the actual error for debugging
 		slog.Error("Failed to query top navigation", "error", err)

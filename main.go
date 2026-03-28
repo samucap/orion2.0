@@ -13,6 +13,7 @@ import (
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/joho/godotenv"
 	"github.com/samucap/orion2.0/handlers"
+	"github.com/samucap/orion2.0/internal/auth"
 	"github.com/samucap/orion2.0/internal/cache"
 	"github.com/samucap/orion2.0/internal/db"
 	"github.com/samucap/orion2.0/middleware"
@@ -31,6 +32,7 @@ func main() {
 	slog.SetDefault(logger)
 
 	// Initialize database connection (optional)
+	var refreshSvc *auth.RefreshService
 	dbPool, err := db.InitDB()
 	if err != nil {
 		slog.Warn("Failed to initialize database, continuing without DB features", "error", err)
@@ -38,6 +40,21 @@ func main() {
 	} else {
 		defer dbPool.Close()
 		slog.Info("Database connection established")
+		// Cleanup expired token revocations periodically to avoid unbounded growth.
+		go func() {
+			ticker := time.NewTicker(15 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = db.TokenBlacklist.CleanupExpiredTokens(cleanupCtx)
+				cancel()
+			}
+		}()
+
+		refreshStore := auth.NewPgRefreshTokenStore(dbPool)
+		refreshSvc = auth.NewRefreshService(refreshStore)
+		handlers.SetRefreshService(refreshSvc)
+		slog.Info("Refresh token service initialized")
 	}
 
 	// Initialize cache
@@ -56,28 +73,37 @@ func main() {
 	r.Use(chiMiddleware.Timeout(60 * time.Second))
 	r.Use(securityHeaders)
 
-	// Authentication middleware (conditionally applied based on env)
-	authEnabled := os.Getenv("AUTH_ENABLED") == "true"
-	if authEnabled {
-		r.Use(middleware.Auth)
-		slog.Info("Authentication enabled")
-	} else {
-		slog.Info("Authentication disabled")
-	}
-
-	// Routes
-	r.Get("/events", handlers.GetEvents)
-	r.Get("/events-v2", handlers.GetEventsV2)
-	r.Get("/top-nav", handlers.GetTopNav)
-
-	// Cache management endpoint
-	r.Post("/cache/clear", handlers.ClearCache)
-
-	// Health check endpoint
+	// Health check (always public)
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	// Cache management (always public)
+	r.Post("/cache/clear", handlers.ClearCache)
+
+	// Auth routes: public, rate-limited to prevent brute-force
+	r.Route("/api/auth", func(r chi.Router) {
+		r.Use(middleware.RateLimit(2, 5))
+		r.Post("/", handlers.Login)
+		r.Post("/signup", handlers.Signup)
+		r.With(middleware.Auth).Post("/refresh", handlers.RefreshToken)
+		r.With(middleware.Auth).Post("/logout", handlers.Logout)
+		r.With(auth.RefreshTokenMiddleware()).Post("/refresh-token", auth.RefreshHandler(refreshSvc))
+		r.With(auth.RefreshTokenMiddleware()).Post("/logout-token", auth.LogoutHandler(refreshSvc))
+	})
+
+	// Protected routes: always require valid JWT regardless of AUTH_ENABLED
+	r.Route("/api", func(r chi.Router) {
+		r.Use(middleware.RateLimit(5, 10))
+		r.Use(middleware.Auth)
+		r.Get("/events", handlers.GetEvents)
+		r.Get("/events-v2", handlers.GetEventsV2)
+		r.Get("/top-nav", handlers.GetTopNav)
+		r.Get("/profile", handlers.Profile)
+		r.Put("/profile", handlers.UpdateProfile)
+		r.Delete("/profile", handlers.DeleteAccount)
 	})
 
 	// Server configuration

@@ -18,6 +18,8 @@ func TransformEventV2(raw RawGammaEvent, teamsByName map[string]db.PlyMktTeam, l
 	}
 
 	// Classify event type (sports first, then market count)
+	// negRisk event?
+	//
 	var v2Event V2Event
 	if IsSportsEvent(raw) {
 		if isSportsGroupEvent(raw) {
@@ -161,6 +163,7 @@ func buildSportsGroupEvent(raw RawGammaEvent, teamsByName map[string]db.PlyMktTe
 			LiquidityClob:      mp.market.LiquidityClob.Float64(),
 			OneDayPriceChange:  mp.market.OneDayPriceChange.Float64(),
 			OneHourPriceChange: mp.market.OneHourPriceChange.Float64(),
+			ClobTokenIds:       mp.market.ClobTokenIds,
 		})
 	}
 
@@ -260,6 +263,7 @@ func buildGroupEvent(raw RawGammaEvent) V2Event {
 			LiquidityClob:      mp.market.LiquidityClob.Float64(),
 			OneDayPriceChange:  mp.market.OneDayPriceChange.Float64(),
 			OneHourPriceChange: mp.market.OneHourPriceChange.Float64(),
+			ClobTokenIds:       mp.market.ClobTokenIds,
 		})
 	}
 
@@ -340,6 +344,7 @@ func buildBinaryEvent(raw RawGammaEvent) V2Event {
 			LiquidityClob:      market.LiquidityClob.Float64(),
 			OneDayPriceChange:  market.OneDayPriceChange.Float64(),
 			OneHourPriceChange: market.OneHourPriceChange.Float64(),
+			ClobTokenIds:       market.ClobTokenIds,
 		})
 	}
 
@@ -439,18 +444,8 @@ func isV2EventDisputed(raw RawGammaEvent) bool {
 
 // buildSportsOutcomes creates V2Outcome array for sports events with market trading data
 func buildSportsOutcomes(raw RawGammaEvent, teamsByName map[string]db.PlyMktTeam, leaguesBySlug map[string]db.League) []V2Outcome {
-	// Find the main market (highest liquidity)
-	var mainMarket *RawGammaMarket
-	for _, m := range raw.Markets {
-		if m.SportsMarketType == "moneyline" {
-			mainMarket = &m
-			break
-		}
-	}
-
-	if mainMarket == nil && len(raw.Markets) > 0 {
-		mainMarket = &raw.Markets[0]
-	}
+	// Find the primary market (moneyline preferred, then highest liquidity)
+	mainMarket := primarySportsMarket(raw)
 
 	if mainMarket == nil {
 		return nil
@@ -503,6 +498,7 @@ func buildSportsOutcomes(raw RawGammaEvent, teamsByName map[string]db.PlyMktTeam
 			LiquidityClob:      mainMarket.LiquidityClob.Float64(),
 			OneDayPriceChange:  mainMarket.OneDayPriceChange.Float64(),
 			OneHourPriceChange: mainMarket.OneHourPriceChange.Float64(),
+			ClobTokenIds:       mainMarket.ClobTokenIds,
 		})
 	}
 
@@ -547,6 +543,7 @@ func buildMoneylineOutcomes(raw RawGammaEvent, teamsByName map[string]db.PlyMktT
 			LiquidityClob:      m.LiquidityClob.Float64(),
 			OneDayPriceChange:  m.OneDayPriceChange.Float64(),
 			OneHourPriceChange: m.OneHourPriceChange.Float64(),
+			ClobTokenIds:       m.ClobTokenIds,
 		})
 	}
 	return v2Outcomes
@@ -604,4 +601,23 @@ func stripEventTitle(question, eventTitle string) string {
 
 	// If no pattern matches, return the original question
 	return cleanQuestion
+}
+
+// primarySportsMarket returns the preferred market for sports events.
+// Prioritizes moneyline markets, falls back to highest liquidity market.
+func primarySportsMarket(raw RawGammaEvent) *RawGammaMarket {
+	for i := range raw.Markets {
+		if raw.Markets[i].SportsMarketType == "moneyline" {
+			return &raw.Markets[i]
+		}
+	}
+	return highestLiquidityMarket(raw)
+}
+
+// sortMarketsMoneylineFirst sorts markets so moneyline markets appear first.
+// This ensures Outcomes[0] comes from the moneyline market when available.
+func sortMarketsMoneylineFirst(markets []RawGammaMarket) {
+	sort.SliceStable(markets, func(i, j int) bool {
+		return markets[i].SportsMarketType == "moneyline" && markets[j].SportsMarketType != "moneyline"
+	})
 }

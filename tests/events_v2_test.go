@@ -394,3 +394,207 @@ func TestSportsVersusMarketImageFallback(t *testing.T) {
 	assert.Equal(t, "nhl-matchup.png", result.DisplayData.Participants[0].ImageURL)
 	assert.Equal(t, "nhl-matchup.png", result.DisplayData.Participants[1].ImageURL)
 }
+
+// =============================================================================
+// IMAGE ACCURACY TESTS (CRITICAL - LOCKS IN PER-MARKET IMAGE BEHAVIOR)
+// =============================================================================
+
+func TestGroupEventPreservesPerMarketImages(t *testing.T) {
+	// Politics event with 3 markets each having a unique candidate image.
+	// Each outcome's .Image should match its own market's image, not the event image or any other market's image.
+	rawEvent := handlers.RawGammaEvent{
+		ID:     "politics-election-2024",
+		Title:  "2024 US Presidential Election Winner",
+		Icon:   "election-generic.png", // Generic event image
+		Volume: handlers.FlexFloat(1000000),
+		Markets: []handlers.RawGammaMarket{
+			{
+				ID: "market-trump", GroupItemTitle: "Trump", Image: "trump-photo.png",
+				Active: true, Closed: false, OutcomePricesRaw: `["0.55"]`,
+			},
+			{
+				ID: "market-harris", GroupItemTitle: "Harris", Image: "harris-photo.png",
+				Active: true, Closed: false, OutcomePricesRaw: `["0.35"]`,
+			},
+			{
+				ID: "market-desantis", GroupItemTitle: "DeSantis", Image: "desantis-photo.png",
+				Active: true, Closed: false, OutcomePricesRaw: `["0.10"]`,
+			},
+		},
+	}
+
+	result := handlers.TransformEventV2(rawEvent, map[string]db.PlyMktTeam{}, map[string]db.League{})
+
+	assert.NotNil(t, result)
+	assert.Equal(t, "group", result.DisplayType)
+	assert.Len(t, result.Outcomes, 3)
+
+	// Verify each outcome has its own market's image (not the generic event image)
+	assert.Equal(t, "trump-photo.png", result.Outcomes[0].Image)   // Trump (highest probability)
+	assert.Equal(t, "harris-photo.png", result.Outcomes[1].Image)  // Harris
+	assert.Equal(t, "desantis-photo.png", result.Outcomes[2].Image) // DeSantis (lowest probability)
+
+	// Verify images are NOT the generic event image
+	for _, outcome := range result.Outcomes {
+		assert.NotEqual(t, "election-generic.png", outcome.Image, "Outcome should not have generic event image")
+	}
+}
+
+func TestBinaryEventPreservesMarketImage(t *testing.T) {
+	// Binary crypto event where market has a specific chart image.
+	// Both Yes and No outcomes should have that image.
+	rawEvent := handlers.RawGammaEvent{
+		ID:     "btc-prediction",
+		Title:  "Will BTC hit 100k by EOY?",
+		Image:  "generic-crypto.png", // Event image
+		Volume: handlers.FlexFloat(50000),
+		Markets: []handlers.RawGammaMarket{
+			{
+				ID: "market-btc", Image: "btc-chart.png", // Market-specific image
+				Active: true, Closed: false, OutcomesRaw: `["Yes", "No"]`, OutcomePricesRaw: `["0.65", "0.35"]`,
+			},
+		},
+	}
+
+	result := handlers.TransformEventV2(rawEvent, map[string]db.PlyMktTeam{}, map[string]db.League{})
+
+	assert.NotNil(t, result)
+	assert.Equal(t, "binary", result.DisplayType)
+	assert.Len(t, result.Outcomes, 2)
+
+	// Both outcomes should have the market's specific image, not the generic event image
+	assert.Equal(t, "btc-chart.png", result.Outcomes[0].Image) // Yes
+	assert.Equal(t, "btc-chart.png", result.Outcomes[1].Image) // No
+
+	// Verify they don't have the generic event image
+	assert.NotEqual(t, "generic-crypto.png", result.Outcomes[0].Image)
+	assert.NotEqual(t, "generic-crypto.png", result.Outcomes[1].Image)
+}
+
+func TestGroupEventImageNotSwappedBySorting(t *testing.T) {
+	// 4 markets with different images and probabilities.
+	// After sorting by probability DESC, each outcome still has the image from its own original market.
+	rawEvent := handlers.RawGammaEvent{
+		ID:     "tech-stocks",
+		Title:  "Which Tech Stock Will Perform Best in 2024?",
+		Volume: handlers.FlexFloat(200000),
+		Markets: []handlers.RawGammaMarket{
+			{ID: "m1", GroupItemTitle: "Apple", Image: "apple-logo.png", OutcomePricesRaw: `["0.10"]`},  // 4th place
+			{ID: "m2", GroupItemTitle: "Google", Image: "google-logo.png", OutcomePricesRaw: `["0.40"]`}, // 2nd place
+			{ID: "m3", GroupItemTitle: "Tesla", Image: "tesla-logo.png", OutcomePricesRaw: `["0.05"]`},  // 5th place (excluded from top 5)
+			{ID: "m4", GroupItemTitle: "Meta", Image: "meta-logo.png", OutcomePricesRaw: `["0.25"]`},    // 3rd place
+			{ID: "m5", GroupItemTitle: "Microsoft", Image: "microsoft-logo.png", OutcomePricesRaw: `["0.20"]`}, // 4th place (but after Apple)
+		},
+	}
+
+	result := handlers.TransformEventV2(rawEvent, map[string]db.PlyMktTeam{}, map[string]db.League{})
+
+	assert.NotNil(t, result)
+	assert.Equal(t, "group", result.DisplayType)
+	assert.Len(t, result.Outcomes, 5) // All markets included (no zero probability exclusions)
+
+	// Verify sorting by probability DESC and image preservation
+	assert.Equal(t, "Google", result.Outcomes[0].Label)     // 0.40 - highest
+	assert.Equal(t, "google-logo.png", result.Outcomes[0].Image)
+
+	assert.Equal(t, "Meta", result.Outcomes[1].Label)       // 0.25
+	assert.Equal(t, "meta-logo.png", result.Outcomes[1].Image)
+
+	assert.Equal(t, "Microsoft", result.Outcomes[2].Label)  // 0.20
+	assert.Equal(t, "microsoft-logo.png", result.Outcomes[2].Image)
+
+	assert.Equal(t, "Apple", result.Outcomes[3].Label)      // 0.10
+	assert.Equal(t, "apple-logo.png", result.Outcomes[3].Image)
+
+	assert.Equal(t, "Tesla", result.Outcomes[4].Label)      // 0.05 - lowest
+	assert.Equal(t, "tesla-logo.png", result.Outcomes[4].Image)
+}
+
+// =============================================================================
+// PRIMARY MARKET SELECTION TESTS
+// =============================================================================
+
+func TestSportsMoneylineNotFirst(t *testing.T) {
+	// Raw event has spread market at Markets[0] (higher liquidity), moneyline at Markets[2].
+	// Outcomes must use moneyline market data and images.
+	rawEvent := handlers.RawGammaEvent{
+		ID:       "nhl-game-1",
+		Title:    "Maple Leafs vs Canadiens",
+		Category: "Sports",
+		GameID:   handlers.FlexString("12345"),
+		Tags:     []handlers.RawGammaTag{{Slug: "nhl"}},
+		Markets: []handlers.RawGammaMarket{
+			{
+				ID: "spread-market", SportsMarketType: "spread", Image: "spread-generic.png",
+				Liquidity: handlers.FlexFloat(100000), // Higher liquidity
+				OutcomesRaw: `["Maple Leafs -1.5", "Canadiens +1.5"]`, OutcomePricesRaw: `["0.52", "0.48"]`,
+			},
+			{
+				ID: "total-market", SportsMarketType: "total", Image: "total-generic.png",
+				Liquidity: handlers.FlexFloat(50000),
+				OutcomesRaw: `["Over 6.5", "Under 6.5"]`, OutcomePricesRaw: `["0.50", "0.50"]`,
+			},
+			{
+				ID: "moneyline-market", SportsMarketType: "moneyline", Image: "moneyline-specific.png",
+				Liquidity: handlers.FlexFloat(75000), // Lower liquidity than spread but is moneyline
+				OutcomesRaw: `["Maple Leafs", "Canadiens"]`, OutcomePricesRaw: `["0.55", "0.45"]`,
+			},
+		},
+	}
+
+	result := handlers.TransformEventV2(rawEvent, map[string]db.PlyMktTeam{}, map[string]db.League{})
+
+	assert.NotNil(t, result)
+	assert.Equal(t, "sports", result.DisplayType)
+	assert.Len(t, result.Outcomes, 2)
+
+	// Outcomes should use moneyline market data (not spread or total)
+	assert.Equal(t, "Maple Leafs", result.Outcomes[0].Label)
+	assert.Equal(t, 0.55, result.Outcomes[0].Probability)
+	assert.Equal(t, "Canadiens", result.Outcomes[1].Label)
+	assert.Equal(t, 0.45, result.Outcomes[1].Probability)
+
+	// Outcomes should have moneyline market's liquidity and volume (not spread's)
+	assert.Equal(t, 75000.0, result.Outcomes[0].Liquidity)
+	assert.Equal(t, 75000.0, result.Outcomes[1].Liquidity)
+}
+
+func TestSportsMoneylineUsedForDisplayData(t *testing.T) {
+	// Same setup as above; DisplayData.Participants are built from moneyline outcomes,
+	// not from the higher-liquidity spread market.
+	rawEvent := handlers.RawGammaEvent{
+		ID:       "nba-game-1",
+		Title:    "Lakers vs Warriors",
+		Category: "Sports",
+		GameID:   handlers.FlexString("67890"),
+		Tags:     []handlers.RawGammaTag{{Slug: "nba"}},
+		Markets: []handlers.RawGammaMarket{
+			{
+				ID: "spread-market", SportsMarketType: "spread",
+				Liquidity: handlers.FlexFloat(200000), // Much higher liquidity
+				OutcomesRaw: `["Lakers -2.5", "Warriors +2.5"]`, OutcomePricesRaw: `["0.50", "0.50"]`,
+			},
+			{
+				ID: "moneyline-market", SportsMarketType: "moneyline",
+				Liquidity: handlers.FlexFloat(50000), // Lower liquidity
+				OutcomesRaw: `["Lakers", "Warriors"]`, OutcomePricesRaw: `["0.60", "0.40"]`,
+			},
+		},
+	}
+
+	leaguesBySlug := map[string]db.League{
+		"nba": {Sport: "nba", Ordering: "home"},
+	}
+
+	result := handlers.TransformEventV2(rawEvent, map[string]db.PlyMktTeam{}, leaguesBySlug)
+
+	assert.NotNil(t, result)
+	assert.Equal(t, "sports", result.DisplayType)
+	assert.NotNil(t, result.DisplayData)
+	assert.Equal(t, "versus_match", result.DisplayData.Type)
+	assert.Len(t, result.DisplayData.Participants, 2)
+
+	// DisplayData should use moneyline team names (not spread names like "Lakers -2.5")
+	assert.Equal(t, "Lakers", result.DisplayData.Participants[0].Name)
+	assert.Equal(t, "Warriors", result.DisplayData.Participants[1].Name)
+}

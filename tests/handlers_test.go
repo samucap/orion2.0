@@ -8,12 +8,14 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/samucap/orion2.0/internal/db"
 	"github.com/samucap/orion2.0/handlers"
 	"github.com/samucap/orion2.0/middleware"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestGetEvents(t *testing.T) {
+	validToken := issueTestToken(t, 1234567890)
 	tests := []struct {
 		name           string
 		authEnabled    bool
@@ -30,7 +32,7 @@ func TestGetEvents(t *testing.T) {
 		{
 			name:           "success with valid auth",
 			authEnabled:    true,
-			authHeader:     "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE1MTYyMzkwMjIsIm5hbWUiOiJKb2huIERvZSIsInN1YiI6IjEyMzQ1Njc4OTAifQ.aBVuJ8rG3ZJV053YgdpP4K7wIcGfLJwaWNoEyt4Ps04",
+			authHeader:     "Bearer " + validToken,
 			expectedStatus: http.StatusOK,
 			expectBody:     true,
 		},
@@ -61,7 +63,10 @@ func TestGetEvents(t *testing.T) {
 			// Set up environment
 			if tt.authEnabled {
 				os.Setenv("AUTH_ENABLED", "true")
-				os.Setenv("JWT_SECRET", "test-secret-key")
+				os.Setenv("JWT_SECRET", testJWTSecret)
+				origBlacklist := db.TokenBlacklist
+				db.TokenBlacklist = &mockTokenBlacklist{}
+				t.Cleanup(func() { db.TokenBlacklist = origBlacklist })
 			} else {
 				os.Setenv("AUTH_ENABLED", "false")
 			}
@@ -124,6 +129,7 @@ func TestGetEvents(t *testing.T) {
 }
 
 func TestGetTopNav(t *testing.T) {
+	validToken := issueTestToken(t, 1234567890)
 	tests := []struct {
 		name           string
 		authEnabled    bool
@@ -140,7 +146,7 @@ func TestGetTopNav(t *testing.T) {
 		{
 			name:           "success with valid auth",
 			authEnabled:    true,
-			authHeader:     "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE1MTYyMzkwMjIsIm5hbWUiOiJKb2huIERvZSIsInN1YiI6IjEyMzQ1Njc4OTAifQ.aBVuJ8rG3ZJV053YgdpP4K7wIcGfLJwaWNoEyt4Ps04",
+			authHeader:     "Bearer " + validToken,
 			expectedStatus: http.StatusOK,
 			expectBody:     true,
 		},
@@ -157,7 +163,10 @@ func TestGetTopNav(t *testing.T) {
 			// Set up environment
 			if tt.authEnabled {
 				os.Setenv("AUTH_ENABLED", "true")
-				os.Setenv("JWT_SECRET", "test-secret-key")
+				os.Setenv("JWT_SECRET", testJWTSecret)
+				origBlacklist := db.TokenBlacklist
+				db.TokenBlacklist = &mockTokenBlacklist{}
+				t.Cleanup(func() { db.TokenBlacklist = origBlacklist })
 			} else {
 				os.Setenv("AUTH_ENABLED", "false")
 			}

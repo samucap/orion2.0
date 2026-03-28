@@ -60,7 +60,6 @@ func GetEventsV2(w http.ResponseWriter, r *http.Request) {
 	limit := getParam("limit", "50")
 	active := getParam("active", "true")
 	closed := getParam("closed", "false")
-	volMin := getParam("volumeMin", "500")
 
 	// Optional params — only appended to Gamma URL if provided
 	offset := params.Get("offset")
@@ -68,25 +67,31 @@ func GetEventsV2(w http.ResponseWriter, r *http.Request) {
 	startDateMin := params.Get("start_date_min")
 	spreadMax := params.Get("spread_max")
 	rewardMin := params.Get("rewardMin")
+	volMin := params.Get("volume_min")
+	liqMin := params.Get("liquidity_min")
+	excludeTagId := params.Get("exclude_tag_id")
 
 	// Build Polymarket Gamma API URL
 	gammaBase := `https://gamma-api.polymarket.com`
 	evPath := fmt.Sprintf(
 		"/events?archived=false&include_chat=false&cyom=false&include_template=false"+
 			"&active=%s&closed=%s&ascending=%s&limit=%s"+
-			"&order=%s&volume_min=%s",
+			"&order=%s",
 		active, closed, ascending, limit,
-		order, volMin,
+		order,
 	)
-	if liqMin := params.Get("liquidityMin"); liqMin != "" {
-		evPath += "&liquidity_min=" + liqMin
-	}
-
 	if tagID != "" {
 		evPath += "&tag_id=" + tagID
 		if tagID == "100215" {
 			evPath += "&related_tags=true"
 		}
+	}
+
+	if volMin != "" {
+		evPath += "&volume_min=" + volMin
+	}
+	if liqMin != "" {
+		evPath += "&liquidity_min=" + liqMin
 	}
 	if offset != "" {
 		evPath += "&offset=" + offset
@@ -102,6 +107,9 @@ func GetEventsV2(w http.ResponseWriter, r *http.Request) {
 	}
 	if rewardMin != "" {
 		evPath += "&reward_min=" + rewardMin
+	}
+	if excludeTagId != "" {
+		evPath += "&exclude_tag_id=" + excludeTagId
 	}
 
 	resp, err := http.Get(gammaBase + evPath)
@@ -145,30 +153,12 @@ func GetEventsV2(w http.ResponseWriter, r *http.Request) {
 		leaguesBySlug = map[string]db.League{}
 	}
 
-	// 1. Get sports tags from DB
-	sportsTags, err := db.QuerySportsTagSlugs(ctx)
-	if err != nil {
-		sportsTags = map[string]bool{"sports": true, "esports": true, "soccer": true, "football": true} // fallback
-	}
-
-	// 2. Identify sports events and collect team names AND league slugs in a single pass
-	var teamNames []string
+	// Identify sports events and collect team names + league slugs in a single pass
+	var teamLabels []string
 	leagueSlugs := make(map[string]bool)
 
 	for _, raw := range rawEvents {
-		isSports := false
-		if raw.Category == "Sports" || raw.GameID.String() != "" {
-			isSports = true
-		} else {
-			for _, tag := range raw.Tags {
-				if sportsTags[tag.Slug] {
-					isSports = true
-					break
-				}
-			}
-		}
-
-		if !isSports {
+		if !IsSportsEvent(raw) {
 			continue
 		}
 
@@ -179,15 +169,15 @@ func GetEventsV2(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Collect names from sports events
+		// Collect team labels from sports events
 		for _, market := range raw.Markets {
 			if s := strings.TrimSpace(market.GroupItemTitle); s != "" {
-				teamNames = append(teamNames, s)
+				teamLabels = append(teamLabels, s)
 			}
 		}
 		for _, team := range raw.Teams {
 			if s := strings.TrimSpace(team.Name); s != "" {
-				teamNames = append(teamNames, s)
+				teamLabels = append(teamLabels, s)
 			}
 		}
 		for _, market := range raw.Markets {
@@ -197,7 +187,7 @@ func GetEventsV2(w http.ResponseWriter, r *http.Request) {
 					for _, outcome := range outcomes {
 						s := strings.TrimSpace(outcome)
 						if s != "" && s != "Yes" && s != "No" {
-							teamNames = append(teamNames, s)
+							teamLabels = append(teamLabels, s)
 						}
 					}
 				}
@@ -205,52 +195,39 @@ func GetEventsV2(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Convert league map to slice
+	// Deduplicate team labels by normalized key (similar to old system)
+	uniqueLabels := make(map[string]string)
+	for _, label := range teamLabels {
+		label = strings.TrimSpace(label)
+		if label == "" {
+			continue
+		}
+		key := db.NormalizeTeamKey(label)
+		if key != "" && uniqueLabels[key] == "" {
+			uniqueLabels[key] = label
+		}
+	}
+
+	dedupedLabels := make([]string, 0, len(uniqueLabels))
+	for _, label := range uniqueLabels {
+		dedupedLabels = append(dedupedLabels, label)
+	}
+
+	// Convert to slices and resolve teams with the new unified query
 	var targetLeagues []string
 	for slug := range leagueSlugs {
 		targetLeagues = append(targetLeagues, slug)
 	}
 
-	// 3. Batch query ALL teams in the detected leagues (required for TeamByLabel fuzzy matching)
-	teamsByName, err := db.QueryTeamsByLeagues(ctx, targetLeagues)
+	teamsByName, err := db.QueryTeamsResolved(ctx, dedupedLabels, targetLeagues)
 	if err != nil {
 		teamsByName = map[string]db.PlyMktTeam{}
 	}
 
-	// 4. Also batch query the specific detected names as a fallback (for cross-league teams)
-	// Dedupe by normalized key first
-	uniqueByKey := make(map[string]string)
-	for _, n := range teamNames {
-		n = strings.TrimSpace(n)
-		if n == "" {
-			continue
-		}
-		key := db.NormalizeTeamKey(n)
-		if key != "" && uniqueByKey[key] == "" {
-			uniqueByKey[key] = n
-		}
-	}
-	teamNames = make([]string, 0, len(uniqueByKey))
-	for _, n := range uniqueByKey {
-		teamNames = append(teamNames, n)
-	}
-
-	// Add suffix variants for multi-word names
-	var suffixNames []string
-	for _, n := range teamNames {
-		words := strings.Fields(n)
-		for i := 1; i < len(words); i++ {
-			suffix := strings.Join(words[i:], " ")
-			if suffix != "" {
-				suffixNames = append(suffixNames, suffix)
-			}
-		}
-	}
-	teamNames = append(teamNames, suffixNames...)
-
-	if nameBasedTeams, err := db.QueryTeamsByNamesBatched(ctx, teamNames, 250); err == nil {
-		for k, v := range nameBasedTeams {
-			teamsByName[k] = v
+	// Sort sports markets so moneyline appears first (ensures Outcomes[0] uses moneyline)
+	for i := range rawEvents {
+		if IsSportsEvent(rawEvents[i]) {
+			sortMarketsMoneylineFirst(rawEvents[i].Markets)
 		}
 	}
 

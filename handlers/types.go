@@ -112,6 +112,7 @@ type RawGammaMarket struct {
 	LastTradePrice     FlexFloat `json:"lastTradePrice"`
 	ClosedTime         string    `json:"closedTime"`
 	FinishedTimestamp  string    `json:"finishedTimestamp"`
+	ClobTokenIds       string    `json:"clobTokenIds"`
 }
 
 // RawGammaEvent represents an event from the Polymarket Gamma API.
@@ -302,6 +303,7 @@ type V2Outcome struct {
 	OneHourPriceChange float64 `json:"oneHourPriceChange"`
 	LastTradePrice     float64 `json:"lastTradePrice"`
 	Spread             float64 `json:"spread"`
+	ClobTokenIds       string  `json:"clobTokenIds,omitempty"`
 }
 
 type V2DisplayData struct {

@@ -33,16 +33,16 @@ func ResolveTeamImage(label string, team *db.PlyMktTeam, raw RawGammaEvent, even
 	if img := deriveTeamLogoURL(eventLeague, label, abbreviationForLabel(team, raw, label), leaguesBySlug); img != "" {
 		return img
 	}
-	// 3.5: Country-flags safety net for international events
+	// 4. Country-flags safety net for international events
 	// DB teams should have logos, but if lookup missed, derive from known country names
 	if code := countryNameToCode[strings.ToLower(strings.TrimSpace(label))]; code != "" {
 		return "https://polymarket-upload.s3.us-east-2.amazonaws.com/country-flags/" + code + ".png"
 	}
-	// 4. Market image — only if it's team-specific (not the same generic event banner)
+	// 5. Market image — only if it's team-specific (not the same generic event banner)
 	if marketImage != "" && marketImage != eventImage {
 		return marketImage
 	}
-	// 5. Fall through to market image even if generic (better than nothing)
+	// 6. Fall through to market image even if generic (better than nothing)
 	return marketImage
 }
 
@@ -95,128 +95,31 @@ func EventLeagueSlug(raw RawGammaEvent, leaguesBySlug map[string]db.League) stri
 	return firstMatch
 }
 
-// soccerSuffixes and soccerPrefixes are common name parts that DB stores but the API omits.
-var soccerSuffixes = []string{" fc", " cf", " sk", " sc", " kv", " bc", " 1909"}
-var soccerPrefixes = []string{"fc ", "afc ", "bsc ", "as ", "ss ", "ssc "}
 
 // TeamByLabel looks up a team by label (case-insensitive, UTF-8-safe).
-// Uses a two-phase approach: Phase 1 tries all strategies with the league qualifier
-// (preventing cross-league mismatches), Phase 2 tries plain keys as fallback.
+// All fuzzy matching and alias resolution is now handled by QueryTeamsResolved in the DB.
 func TeamByLabel(teamsByName map[string]db.PlyMktTeam, eventLeague, label string, raw RawGammaEvent) *db.PlyMktTeam {
 	key := db.NormalizeTeamKey(label)
 	if key == "" {
 		return nil
 	}
-	lk := ""
+
+	// First try league-qualified lookup to prevent cross-league mismatches
 	if eventLeague != "" {
-		lk = db.NormalizeTeamKey(eventLeague)
-	}
-
-	words := strings.Fields(label)
-
-	// ── Phase 1: League-qualified lookups (all strategies with league prefix) ──
-	// This ensures the correct league's team is found before any cross-league match.
-	if lk != "" {
-		// 1a. Direct league-qualified key
-		if t := lookupLeague(teamsByName, lk, key); t != nil {
-			return t
-		}
-		// 1b. Alias map with league qualifier
-		if canonical, ok := teamLabelAliases[key]; ok {
-			if cKey := db.NormalizeTeamKey(canonical); cKey != "" {
-				if t := lookupLeague(teamsByName, lk, cKey); t != nil {
-					return t
-				}
-			}
-		}
-		// 1c. Soccer name variations with league qualifier
-		for _, sfx := range soccerSuffixes {
-			if t := lookupLeague(teamsByName, lk, key+sfx); t != nil {
-				return t
-			}
-		}
-		for _, pfx := range soccerPrefixes {
-			if t := lookupLeague(teamsByName, lk, pfx+key); t != nil {
-				return t
-			}
-		}
-		// 1d. Suffix stripping with league qualifier
-		for i := 1; i < len(words); i++ {
-			if sfxKey := db.NormalizeTeamKey(strings.Join(words[i:], " ")); sfxKey != "" {
-				if t := lookupLeague(teamsByName, lk, sfxKey); t != nil {
-					return t
-				}
-			}
-		}
-		// 1e. Abbreviation fallback with league qualifier
-		lower := strings.ToLower(label)
-		for _, rt := range raw.Teams {
-			if strings.ToLower(rt.Name) == lower && rt.Abbreviation != "" {
-				if aKey := db.NormalizeTeamKey(rt.Abbreviation); aKey != "" {
-					if t := lookupLeague(teamsByName, lk, aKey); t != nil {
-						return t
-					}
-				}
-			}
+		lk := db.NormalizeTeamKey(eventLeague)
+		if t, ok := teamsByName[lk+"|"+key]; ok {
+			return &t
 		}
 	}
 
-	// ── Phase 2: Plain key lookups (cross-league fallback) ──
-	if t := lookupPlain(teamsByName, key); t != nil {
-		return t
+	// Fall back to plain key lookup
+	if t, ok := teamsByName[key]; ok {
+		return &t
 	}
-	if canonical, ok := teamLabelAliases[key]; ok {
-		if cKey := db.NormalizeTeamKey(canonical); cKey != "" {
-			if t := lookupPlain(teamsByName, cKey); t != nil {
-				return t
-			}
-		}
-	}
-	for _, sfx := range soccerSuffixes {
-		if t := lookupPlain(teamsByName, key+sfx); t != nil {
-			return t
-		}
-	}
-	for _, pfx := range soccerPrefixes {
-		if t := lookupPlain(teamsByName, pfx+key); t != nil {
-			return t
-		}
-	}
-	for i := 1; i < len(words); i++ {
-		if sfxKey := db.NormalizeTeamKey(strings.Join(words[i:], " ")); sfxKey != "" {
-			if t := lookupPlain(teamsByName, sfxKey); t != nil {
-				return t
-			}
-		}
-	}
-	lower := strings.ToLower(label)
-	for _, rt := range raw.Teams {
-		if strings.ToLower(rt.Name) == lower && rt.Abbreviation != "" {
-			if aKey := db.NormalizeTeamKey(rt.Abbreviation); aKey != "" {
-				if t := lookupPlain(teamsByName, aKey); t != nil {
-					return t
-				}
-			}
-		}
-	}
+
 	return nil
 }
 
-// lookupLeague tries a league-qualified key only.
-func lookupLeague(teamsByName map[string]db.PlyMktTeam, leagueKey, key string) *db.PlyMktTeam {
-	if team, ok := teamsByName[leagueKey+"|"+key]; ok {
-		return &team
-	}
-	return nil
-}
-
-// lookupPlain tries a plain (cross-league) key only.
-func lookupPlain(teamsByName map[string]db.PlyMktTeam, key string) *db.PlyMktTeam {
-	if team, ok := teamsByName[key]; ok {
-		return &team
-	}
-	return nil
-}
 
 // =============================================================================
 // INTERNAL HELPERS (unexported)
@@ -248,82 +151,6 @@ func abbreviationForLabel(team *db.PlyMktTeam, raw RawGammaEvent, label string) 
 	return ""
 }
 
-// teamLabelAliases maps common shortened/alternative team names used by the Polymarket API
-// to the canonical DB name so TeamByLabel can resolve them. Keys must be lowercase.
-var teamLabelAliases = map[string]string{
-	// EPL short names -> DB canonical names
-	"man united":    "manchester united fc",
-	"man utd":       "manchester united fc",
-	"man city":      "manchester city fc",
-	"aston villa":   "aston villa fc",
-	"spurs":         "tottenham hotspur fc",
-	"wolves":        "wolverhampton wanderers fc",
-	"west ham":      "west ham united fc",
-	"newcastle":     "newcastle united fc",
-	"crystal palace": "crystal palace fc",
-	"nott'm forest": "nottingham forest fc",
-	"nottm forest":  "nottingham forest fc",
-	"bournemouth":   "afc bournemouth",
-
-	// UCL / European club short names -> DB canonical names
-	"barcelona":          "fc barcelona",
-	"barca":              "fc barcelona",
-	"barça":              "fc barcelona",
-	"bayern munich":      "fc bayern münchen",
-	"bayern":             "fc bayern münchen",
-	"bayern münchen":     "fc bayern münchen",
-	"real madrid":        "real madrid cf",
-	"juventus":           "juventus fc",
-	"juve":               "juventus fc",
-	"psg":                "paris saint-germain fc",
-	"paris saint-germain": "paris saint-germain fc",
-	"inter milan":        "fc internazionale milano",
-	"inter":              "fc internazionale milano",
-	"internazionale":     "fc internazionale milano",
-	"atletico madrid":    "club atlético de madrid",
-	"atletico":           "club atlético de madrid",
-	"atlético madrid":    "club atlético de madrid",
-	"atlético":           "club atlético de madrid",
-	"dortmund":           "bv borussia 09 dortmund",
-	"borussia dortmund":  "bv borussia 09 dortmund",
-	"galatasaray":        "galatasaray sk",
-	"benfica":            "sport lisboa e benfica",
-	"bayer leverkusen":   "bayer 04 leverkusen",
-	"leverkusen":         "bayer 04 leverkusen",
-	"porto":              "fc porto",
-	"monaco":             "as monaco fc",
-	"salzburg":           "fc red bull salzburg",
-	"red bull salzburg":  "fc red bull salzburg",
-	"ajax":               "afc ajax",
-	"roma":               "as roma",
-	"atalanta":           "atalanta bc",
-	"young boys":         "bsc young boys",
-	"club brugge":        "club brugge kv",
-	"celtic":             "celtic fc",
-	"feyenoord":          "feyenoord rotterdam",
-	"psv":                "psv eindhoven",
-	"sporting":           "sporting clube de portugal",
-	"sporting cp":        "sporting clube de portugal",
-	"napoli":             "ssc napoli",
-	"lazio":              "ss lazio",
-	"sevilla":            "sevilla fc",
-	"villarreal":         "villarreal cf",
-	"marseille":          "olympique de marseille",
-	"lyon":               "olympique lyonnais",
-	"lille":              "losc lille",
-	"leipzig":            "rb leipzig",
-	"rb leipzig":         "rasenballsport leipzig",
-	"stuttgart":          "vfb stuttgart",
-	"wolfsburg":          "vfl wolfsburg",
-	"bruges":             "club brugge kv",
-	"girona":             "girona fc",
-	"bologna":            "bologna fc 1909",
-	"slovan bratislava":  "šk slovan bratislava",
-	"red star belgrade":  "fk crvena zvezda",
-	"dinamo zagreb":      "gnk dinamo zagreb",
-	"shakhtar donetsk":   "fc shakhtar donetsk",
-	"shakhtar":           "fc shakhtar donetsk",
-}
 
 // countryNameToCode: verified Polymarket S3 country-flags abbreviations (via scripts/verify_country_flags/).
 var countryNameToCode = map[string]string{
@@ -486,7 +313,7 @@ func buildSportsVersusDisplayData(
 	league *db.League,
 	leaguesBySlug map[string]db.League,
 ) *V2DisplayData {
-	mainMarket := highestLiquidityMarket(raw)
+	mainMarket := primarySportsMarket(raw)
 	if mainMarket == nil {
 		return nil
 	}

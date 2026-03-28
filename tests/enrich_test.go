@@ -2,8 +2,10 @@ package handlers_test
 
 import (
 	"context"
+	"os"
 	"testing"
 
+	"github.com/joho/godotenv"
 	"github.com/samucap/orion2.0/handlers"
 	"github.com/samucap/orion2.0/internal/db"
 	"github.com/stretchr/testify/assert"
@@ -256,7 +258,8 @@ func TestEnrichGroupMarketImageFallback(t *testing.T) {
 }
 
 func TestEnrichAbbreviationFallback(t *testing.T) {
-	// Test that TeamByLabel uses abbreviation fallback when full name lookup fails
+	// Test that with the new simplified system, teams resolve via direct map keys
+	// The old abbreviation fallback logic was removed in favor of DB-level fuzzy matching
 	rawEvent := handlers.RawGammaEvent{
 		ID:   "nhl-match",
 		Tags: []handlers.RawGammaTag{{Slug: "nhl"}},
@@ -270,16 +273,12 @@ func TestEnrichAbbreviationFallback(t *testing.T) {
 	}
 
 	leaguesBySlug := map[string]db.League{"nhl": {Sport: "nhl", Ordering: "home"}}
-	// DB has short names, not full names - abbreviation fallback should work
+	// In the new system, teams are resolved via QueryTeamsResolved which populates exact matches
 	teamsByName := map[string]db.PlyMktTeam{
-		"avalanche":     {Name: "Avalanche", League: "nhl", Logo: "avalanche-logo.png", Abbreviation: "COL"},
-		"nhl|avalanche": {Name: "Avalanche", League: "nhl", Logo: "avalanche-logo.png", Abbreviation: "COL"},
-		"col":           {Name: "Avalanche", League: "nhl", Logo: "avalanche-logo.png", Abbreviation: "COL"},
-		"nhl|col":       {Name: "Avalanche", League: "nhl", Logo: "avalanche-logo.png", Abbreviation: "COL"},
-		"bruins":        {Name: "Bruins", League: "nhl", Logo: "bruins-logo.png", Abbreviation: "BOS"},
-		"nhl|bruins":    {Name: "Bruins", League: "nhl", Logo: "bruins-logo.png", Abbreviation: "BOS"},
-		"bos":           {Name: "Bruins", League: "nhl", Logo: "bruins-logo.png", Abbreviation: "BOS"},
-		"nhl|bos":       {Name: "Bruins", League: "nhl", Logo: "bruins-logo.png", Abbreviation: "BOS"},
+		"colorado avalanche":     {Name: "Colorado Avalanche", League: "nhl", Logo: "avalanche-logo.png"},
+		"nhl|colorado avalanche": {Name: "Colorado Avalanche", League: "nhl", Logo: "avalanche-logo.png"},
+		"boston bruins":          {Name: "Boston Bruins", League: "nhl", Logo: "bruins-logo.png"},
+		"nhl|boston bruins":      {Name: "Boston Bruins", League: "nhl", Logo: "bruins-logo.png"},
 	}
 
 	result := handlers.EnrichSportsEvent(rawEvent, teamsByName, leaguesBySlug)
@@ -288,18 +287,33 @@ func TestEnrichAbbreviationFallback(t *testing.T) {
 	assert.Equal(t, "versus_match", result.Type)
 	assert.Len(t, result.Participants, 2)
 
-	// Colorado Avalanche should resolve via abbreviation fallback (DB has "Avalanche", not "Colorado Avalanche")
+	// Teams should resolve via direct key matches (populated by QueryTeamsResolved)
 	avalanche := result.Participants[0]
 	assert.Equal(t, "Colorado Avalanche", avalanche.Name)
 	assert.Equal(t, "avalanche-logo.png", avalanche.ImageURL)
 
-	// Boston Bruins should also resolve via abbreviation fallback (DB has "Bruins", not "Boston Bruins")
 	bruins := result.Participants[1]
 	assert.Equal(t, "Boston Bruins", bruins.Name)
 	assert.Equal(t, "bruins-logo.png", bruins.ImageURL)
 }
 
 func TestQueryTeamsByLeague(t *testing.T) {
+	// Load DB credentials from a local env file when present.
+	candidates := []string{".env.test", "../.env.test"}
+	loaded := ""
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			if err := godotenv.Load(p); err != nil {
+				t.Skipf("Skipping DB-dependent test: failed to load %s: %v", p, err)
+			}
+			loaded = p
+			break
+		}
+	}
+	if loaded == "" {
+		t.Skip("Skipping DB-dependent test: .env.test not available in tests/ or project root")
+	}
+
 	// Initialize database connection for testing
 	_, err := db.InitDB()
 	if err != nil {
@@ -340,8 +354,8 @@ func TestQueryTeamsByLeague(t *testing.T) {
 	assert.Empty(t, teams, "Expected no teams for non-existent league")
 }
 
-func TestTeamByLabelSuffixMatching(t *testing.T) {
-	// Test that TeamByLabel strips city/state names to find DB teams
+func TestTeamByLabelSimplified(t *testing.T) {
+	// Test the new simplified TeamByLabel behavior - only direct map lookups
 	rawEvent := handlers.RawGammaEvent{
 		ID: "nhl-test",
 		Teams: []handlers.RawGammaTeam{
@@ -349,25 +363,31 @@ func TestTeamByLabelSuffixMatching(t *testing.T) {
 		},
 	}
 
-	// Mock teams with short names (like actual DB)
+	// Mock teams map populated by QueryTeamsResolved (includes both league-qualified and plain keys)
 	teamsByName := map[string]db.PlyMktTeam{
-		"avalanche":     {Name: "Avalanche", League: "nhl", Logo: "avalanche-logo.png"},
-		"nhl|avalanche": {Name: "Avalanche", League: "nhl", Logo: "avalanche-logo.png"},
-		"bruins":        {Name: "Bruins", League: "nhl", Logo: "bruins-logo.png"},
-		"nhl|bruins":    {Name: "Bruins", League: "nhl", Logo: "bruins-logo.png"},
+		"colorado avalanche":     {Name: "Colorado Avalanche", League: "nhl", Logo: "avalanche-logo.png"},
+		"nhl|colorado avalanche": {Name: "Colorado Avalanche", League: "nhl", Logo: "avalanche-logo.png"},
+		"avalanche":              {Name: "Avalanche", League: "nhl", Logo: "avalanche-logo.png"},
+		"nhl|avalanche":          {Name: "Avalanche", League: "nhl", Logo: "avalanche-logo.png"},
+		"bruins":                 {Name: "Bruins", League: "nhl", Logo: "bruins-logo.png"},
+		"nhl|bruins":             {Name: "Bruins", League: "nhl", Logo: "bruins-logo.png"},
 	}
 
-	// Test "Colorado Avalanche" -> "Avalanche" via suffix matching
+	// Test league-qualified lookup (preferred)
 	team := handlers.TeamByLabel(teamsByName, "nhl", "Colorado Avalanche", rawEvent)
-	assert.NotNil(t, team, "Expected to find team for Colorado Avalanche")
-	assert.Equal(t, "Avalanche", team.Name)
+	assert.NotNil(t, team, "Expected to find team for Colorado Avalanche via league-qualified lookup")
+	assert.Equal(t, "Colorado Avalanche", team.Name)
 	assert.Equal(t, "avalanche-logo.png", team.Logo)
 
-	// Test "Boston Bruins" -> "Bruins" via suffix matching
-	team2 := handlers.TeamByLabel(teamsByName, "nhl", "Boston Bruins", rawEvent)
-	assert.NotNil(t, team2, "Expected to find team for Boston Bruins")
-	assert.Equal(t, "Bruins", team2.Name)
-	assert.Equal(t, "bruins-logo.png", team2.Logo)
+	// Test fallback to plain key lookup
+	team2 := handlers.TeamByLabel(teamsByName, "", "Avalanche", rawEvent) // No league specified
+	assert.NotNil(t, team2, "Expected to find team for Avalanche via plain key lookup")
+	assert.Equal(t, "Avalanche", team2.Name)
+	assert.Equal(t, "avalanche-logo.png", team2.Logo)
+
+	// Test that unmatched labels return nil
+	team3 := handlers.TeamByLabel(teamsByName, "nhl", "Unknown Team", rawEvent)
+	assert.Nil(t, team3, "Expected nil for unmatched team")
 }
 
 func TestEventLeagueSlugWithAliases(t *testing.T) {
@@ -467,24 +487,21 @@ func TestManUnitedAliasResolvesToManchesterUnited(t *testing.T) {
 		},
 	}
 
+	// In the new system, QueryTeamsResolved populates the map with resolved aliases
 	teamsByName := map[string]db.PlyMktTeam{
+		"man united":               {Name: "Manchester United FC", League: "epl", Logo: "epl_manchester_united.png", Abbreviation: "mun"},
+		"epl|man united":           {Name: "Manchester United FC", League: "epl", Logo: "epl_manchester_united.png", Abbreviation: "mun"},
 		"manchester united fc":     {Name: "Manchester United FC", League: "epl", Logo: "epl_manchester_united.png", Abbreviation: "mun"},
 		"epl|manchester united fc": {Name: "Manchester United FC", League: "epl", Logo: "epl_manchester_united.png", Abbreviation: "mun"},
-		"man utd":                  {Name: "Manchester United FC", League: "epl", Logo: "epl_manchester_united.png", Abbreviation: "mun"},
-		"epl|man utd":              {Name: "Manchester United FC", League: "epl", Logo: "epl_manchester_united.png", Abbreviation: "mun"},
-		"manchester city fc":       {Name: "Manchester City FC", League: "epl", Logo: "epl_manchester_city.png", Abbreviation: "mac"},
-		"epl|manchester city fc":   {Name: "Manchester City FC", League: "epl", Logo: "epl_manchester_city.png", Abbreviation: "mac"},
 		"man city":                 {Name: "Manchester City FC", League: "epl", Logo: "epl_manchester_city.png", Abbreviation: "mac"},
 		"epl|man city":             {Name: "Manchester City FC", League: "epl", Logo: "epl_manchester_city.png", Abbreviation: "mac"},
-		"arsenal fc":               {Name: "Arsenal FC", League: "epl", Logo: "epl_arsenal.png", Abbreviation: "ars"},
-		"epl|arsenal fc":           {Name: "Arsenal FC", League: "epl", Logo: "epl_arsenal.png", Abbreviation: "ars"},
 		"arsenal":                  {Name: "Arsenal FC", League: "epl", Logo: "epl_arsenal.png", Abbreviation: "ars"},
 		"epl|arsenal":              {Name: "Arsenal FC", League: "epl", Logo: "epl_arsenal.png", Abbreviation: "ars"},
 	}
 
-	// "Man United" should resolve via alias map -> "Manchester United FC"
+	// "Man United" should resolve via the alias key populated by QueryTeamsResolved
 	team := handlers.TeamByLabel(teamsByName, "epl", "Man United", rawEvent)
-	assert.NotNil(t, team, "Expected to find team for Man United via alias")
+	assert.NotNil(t, team, "Expected to find team for Man United via alias resolution")
 	assert.Equal(t, "Manchester United FC", team.Name)
 	assert.Equal(t, "epl_manchester_united.png", team.Logo)
 
@@ -512,24 +529,25 @@ func TestUCLTeamLogoResolution(t *testing.T) {
 		},
 	}
 
+	// In the new system, QueryTeamsResolved populates the map with resolved aliases
 	teamsByName := map[string]db.PlyMktTeam{
-		"arsenal fc":                       {Name: "Arsenal FC", League: "ucl", Logo: "ucl_ars.png", Abbreviation: "ars"},
-		"champions-league|arsenal fc":      {Name: "Arsenal FC", League: "ucl", Logo: "ucl_ars.png", Abbreviation: "ars"},
-		"fc barcelona":                     {Name: "FC Barcelona", League: "ucl", Logo: "ucl_fcb.png", Abbreviation: "fcb"},
-		"champions-league|fc barcelona":    {Name: "FC Barcelona", League: "ucl", Logo: "ucl_fcb.png", Abbreviation: "fcb"},
-		"fc bayern münchen":                {Name: "FC Bayern München", League: "ucl", Logo: "ucl_bay.png", Abbreviation: "bay"},
-		"champions-league|fc bayern münchen": {Name: "FC Bayern München", League: "ucl", Logo: "ucl_bay.png", Abbreviation: "bay"},
+		"arsenal":                        {Name: "Arsenal FC", League: "ucl", Logo: "ucl_ars.png", Abbreviation: "ars"},
+		"champions-league|arsenal":       {Name: "Arsenal FC", League: "ucl", Logo: "ucl_ars.png", Abbreviation: "ars"},
+		"barcelona":                      {Name: "FC Barcelona", League: "ucl", Logo: "ucl_fcb.png", Abbreviation: "fcb"},
+		"champions-league|barcelona":     {Name: "FC Barcelona", League: "ucl", Logo: "ucl_fcb.png", Abbreviation: "fcb"},
+		"bayern munich":                  {Name: "FC Bayern München", League: "ucl", Logo: "ucl_bay.png", Abbreviation: "bay"},
+		"champions-league|bayern munich": {Name: "FC Bayern München", League: "ucl", Logo: "ucl_bay.png", Abbreviation: "bay"},
 	}
 
-	// "Arsenal" should find "Arsenal FC" via soccer suffix " fc"
+	// "Arsenal" should resolve via alias to "Arsenal FC"
 	team := handlers.TeamByLabel(teamsByName, "champions-league", "Arsenal", rawEvent)
-	assert.NotNil(t, team, "Expected to find Arsenal FC via soccer name variation")
+	assert.NotNil(t, team, "Expected to find Arsenal FC via alias resolution")
 	assert.Equal(t, "Arsenal FC", team.Name)
 	assert.Equal(t, "ucl_ars.png", team.Logo)
 
-	// "Barcelona" should find "FC Barcelona" via soccer prefix "fc "
+	// "Barcelona" should resolve via alias to "FC Barcelona"
 	team2 := handlers.TeamByLabel(teamsByName, "champions-league", "Barcelona", rawEvent)
-	assert.NotNil(t, team2, "Expected to find FC Barcelona via soccer name variation")
+	assert.NotNil(t, team2, "Expected to find FC Barcelona via alias resolution")
 	assert.Equal(t, "FC Barcelona", team2.Name)
 	assert.Equal(t, "ucl_fcb.png", team2.Logo)
 
@@ -688,13 +706,14 @@ func TestSoccerGroupEventEnrichment(t *testing.T) {
 		"champions-league": {Sport: "ucl", Ordering: "home"},
 	}
 
+	// In the new system, QueryTeamsResolved populates the map with resolved aliases
 	teamsByName := map[string]db.PlyMktTeam{
-		"arsenal fc":                          {Name: "Arsenal FC", League: "ucl", Logo: "ucl_ars.png"},
-		"champions-league|arsenal fc":         {Name: "Arsenal FC", League: "ucl", Logo: "ucl_ars.png"},
-		"fc barcelona":                        {Name: "FC Barcelona", League: "ucl", Logo: "ucl_fcb.png"},
-		"champions-league|fc barcelona":       {Name: "FC Barcelona", League: "ucl", Logo: "ucl_fcb.png"},
-		"fc bayern münchen":                   {Name: "FC Bayern München", League: "ucl", Logo: "ucl_bay.png"},
-		"champions-league|fc bayern münchen":  {Name: "FC Bayern München", League: "ucl", Logo: "ucl_bay.png"},
+		"arsenal":                        {Name: "Arsenal FC", League: "ucl", Logo: "ucl_ars.png"},
+		"champions-league|arsenal":       {Name: "Arsenal FC", League: "ucl", Logo: "ucl_ars.png"},
+		"barcelona":                      {Name: "FC Barcelona", League: "ucl", Logo: "ucl_fcb.png"},
+		"champions-league|barcelona":     {Name: "FC Barcelona", League: "ucl", Logo: "ucl_fcb.png"},
+		"bayern munich":                  {Name: "FC Bayern München", League: "ucl", Logo: "ucl_bay.png"},
+		"champions-league|bayern munich": {Name: "FC Bayern München", League: "ucl", Logo: "ucl_bay.png"},
 	}
 
 	result := handlers.EnrichSportsEvent(rawEvent, teamsByName, leaguesBySlug)
@@ -713,4 +732,277 @@ func TestSoccerGroupEventEnrichment(t *testing.T) {
 	// Barcelona (0.12) should be third, with UCL logo
 	assert.Equal(t, "Barcelona", result.Participants[2].Name)
 	assert.Equal(t, "ucl_fcb.png", result.Participants[2].ImageURL)
+}
+
+// =============================================================================
+// SPORTS IMAGE CASCADE TESTS (PER-MARKET IMAGES AS FALLBACK)
+// =============================================================================
+
+func TestSportsGroupPerMarketImageFallback(t *testing.T) {
+	// Futures event with 3 markets: market A has DB team with logo, market B has no DB team but has market.Image,
+	// market C has no DB team and market.Image = "" (empty). Assert correct cascade behavior.
+	rawEvent := handlers.RawGammaEvent{
+		ID:       "nba-champions",
+		Title:    "NBA Champions 2024-25",
+		Category: "Sports",
+		Tags:     []handlers.RawGammaTag{{Slug: "nba"}},
+		Markets: []handlers.RawGammaMarket{
+			{ID: "m1", GroupItemTitle: "Lakers", OutcomePricesRaw: `["0.20"]`, Image: "lakers-market.png"},
+			{ID: "m2", GroupItemTitle: "Clippers", OutcomePricesRaw: `["0.15"]`, Image: "clippers-market.png"},
+			{ID: "m3", GroupItemTitle: "Unknown Team", OutcomePricesRaw: `["0.05"]`, Image: ""}, // No market image
+		},
+		Image: "nba-generic.png", // Event image
+	}
+
+	leaguesBySlug := map[string]db.League{
+		"nba": {Sport: "nba"},
+	}
+
+	teamsByName := map[string]db.PlyMktTeam{
+		"lakers": {Name: "Lakers", League: "nba", Logo: "lakers-db-logo.png"}, // DB has logo
+		// Clippers not in DB, should fall back to market image
+		// Unknown Team not in DB and no market image, should fall back to empty/default
+	}
+
+	result := handlers.EnrichSportsEvent(rawEvent, teamsByName, leaguesBySlug)
+
+	assert.NotNil(t, result)
+	assert.Equal(t, "tournament", result.Type)
+	assert.Len(t, result.Participants, 3)
+
+	// Lakers: DB logo takes priority
+	assert.Equal(t, "Lakers", result.Participants[0].Name)
+	assert.Equal(t, "lakers-db-logo.png", result.Participants[0].ImageURL)
+
+	// Clippers: No DB logo, falls back to market image
+	assert.Equal(t, "Clippers", result.Participants[1].Name)
+	assert.Equal(t, "clippers-market.png", result.Participants[1].ImageURL)
+
+	// Unknown Team: No DB logo, no market image, should be empty/default
+	assert.Equal(t, "Unknown Team", result.Participants[2].Name)
+	assert.Equal(t, "", result.Participants[2].ImageURL) // Or some default, but not event image
+}
+
+func TestSoccerMoneylinePerMarketImages(t *testing.T) {
+	// Soccer match with 3 per-team Yes/No markets (Benfica/benfica.png, Draw/draw.png, Real Madrid/realmadrid.png);
+	// Benfica and Real Madrid resolve from DB (get DB logos), Draw has no DB team so gets its own market image.
+	rawEvent := handlers.RawGammaEvent{
+		ID:     "ucl-match",
+		Title:  "Benfica vs Real Madrid",
+		GameID: handlers.FlexString("90107668"),
+		Tags:   []handlers.RawGammaTag{{Slug: "ucl"}, {Slug: "soccer"}},
+		Markets: []handlers.RawGammaMarket{
+			{
+				ID: "benfica-market", GroupItemTitle: "Benfica", SportsMarketType: "moneyline",
+				OutcomesRaw: `["Yes", "No"]`, OutcomePricesRaw: `["0.25", "0.75"]`,
+				Image: "benfica-market.png",
+			},
+			{
+				ID: "draw-market", GroupItemTitle: "Draw", SportsMarketType: "moneyline",
+				OutcomesRaw: `["Yes", "No"]`, OutcomePricesRaw: `["0.30", "0.70"]`,
+				Image: "draw-market.png",
+			},
+			{
+				ID: "realmadrid-market", GroupItemTitle: "Real Madrid", SportsMarketType: "moneyline",
+				OutcomesRaw: `["Yes", "No"]`, OutcomePricesRaw: `["0.45", "0.55"]`,
+				Image: "realmadrid-market.png",
+			},
+		},
+		Image: "ucl-generic.png", // Event image
+	}
+
+	leaguesBySlug := map[string]db.League{
+		"ucl": {Sport: "ucl", Ordering: "home"},
+	}
+
+	teamsByName := map[string]db.PlyMktTeam{
+		"benfica":     {Name: "Benfica", League: "ucl", Logo: "benfica-db-logo.png"},
+		"real madrid": {Name: "Real Madrid", League: "ucl", Logo: "realmadrid-db-logo.png"},
+		// Draw not in DB, should fall back to market image
+	}
+
+	result := handlers.EnrichSportsEvent(rawEvent, teamsByName, leaguesBySlug)
+
+	assert.NotNil(t, result)
+	assert.Equal(t, "versus_match", result.Type)
+	assert.Len(t, result.Participants, 2) // Draw excluded from versus
+
+	// Home team: Benfica gets DB logo (not market image)
+	assert.Equal(t, "Benfica", result.Participants[0].Name)
+	assert.Equal(t, "benfica-db-logo.png", result.Participants[0].ImageURL)
+
+	// Away team: Real Madrid gets DB logo (not market image)
+	assert.Equal(t, "Real Madrid", result.Participants[1].Name)
+	assert.Equal(t, "realmadrid-db-logo.png", result.Participants[1].ImageURL)
+}
+
+// =============================================================================
+// ESPORTS EDGE CASES
+// =============================================================================
+
+func TestEsportsShortTeamNames(t *testing.T) {
+	// Match with "T1" vs "Gen.G" (2-char and period-containing names);
+	// verify they resolve from DB if present, else fall back to per-market images.
+	rawEvent := handlers.RawGammaEvent{
+		ID:       "lol-match",
+		Title:    "T1 vs Gen.G",
+		Category: "Sports",
+		GameID:   handlers.FlexString("hltv123"),
+		Tags:     []handlers.RawGammaTag{{Slug: "lol"}, {Slug: "esports"}},
+		Markets: []handlers.RawGammaMarket{
+			{
+				ID:               "t1-market",
+				OutcomesRaw:      `["T1", "Gen.G"]`,
+				OutcomePricesRaw: `["0.55", "0.45"]`,
+				Image:            "lol-matchup.png",
+			},
+		},
+	}
+
+	leaguesBySlug := map[string]db.League{
+		"lol": {Sport: "lol", Ordering: "home"},
+	}
+
+	teamsByName := map[string]db.PlyMktTeam{
+		"t1":   {Name: "T1", League: "lol", Logo: "t1-logo.png"},
+		"gen.g": {Name: "Gen.G", League: "lol", Logo: "geng-logo.png"},
+	}
+
+	result := handlers.EnrichSportsEvent(rawEvent, teamsByName, leaguesBySlug)
+
+	assert.NotNil(t, result)
+	assert.Equal(t, "versus_match", result.Type)
+	assert.Len(t, result.Participants, 2)
+
+	// Both teams resolve from DB
+	assert.Equal(t, "T1", result.Participants[0].Name)
+	assert.Equal(t, "t1-logo.png", result.Participants[0].ImageURL)
+
+	assert.Equal(t, "Gen.G", result.Participants[1].Name)
+	assert.Equal(t, "geng-logo.png", result.Participants[1].ImageURL)
+}
+
+func TestEsportsFallbackToMarketImage(t *testing.T) {
+	// eSports match where no DB team exists; each outcome gets its market-specific image (not a generic event image).
+	rawEvent := handlers.RawGammaEvent{
+		ID:       "cs2-match",
+		Title:    "Team Unknown vs Mystery Squad",
+		Category: "Sports",
+		GameID:   handlers.FlexString("hltv456"),
+		Tags:     []handlers.RawGammaTag{{Slug: "cs2"}, {Slug: "esports"}},
+		Image:    "esports-generic.png", // Generic event image
+		Markets: []handlers.RawGammaMarket{
+			{
+				ID:               "unknown-market",
+				OutcomesRaw:      `["Team Unknown", "Mystery Squad"]`,
+				OutcomePricesRaw: `["0.50", "0.50"]`,
+				Image:            "cs2-matchup.png", // Market-specific image
+			},
+		},
+	}
+
+	leaguesBySlug := map[string]db.League{
+		"cs2": {Sport: "cs2", Ordering: "home"},
+	}
+
+	// No teams in DB
+	teamsByName := map[string]db.PlyMktTeam{}
+
+	result := handlers.EnrichSportsEvent(rawEvent, teamsByName, leaguesBySlug)
+
+	assert.NotNil(t, result)
+	assert.Equal(t, "versus_match", result.Type)
+	assert.Len(t, result.Participants, 2)
+
+	// Both teams should fall back to market image, not generic event image
+	assert.Equal(t, "Team Unknown", result.Participants[0].Name)
+	assert.Equal(t, "cs2-matchup.png", result.Participants[0].ImageURL)
+
+	assert.Equal(t, "Mystery Squad", result.Participants[1].Name)
+	assert.Equal(t, "cs2-matchup.png", result.Participants[1].ImageURL)
+}
+
+// =============================================================================
+// PRIMARY MARKET SELECTION (DISPLAYDATA)
+// =============================================================================
+
+func TestMoneylineSelectedOverHighLiquidityMarket(t *testing.T) {
+	// Sports event where a spread market has 10x the liquidity of the moneyline;
+	// DisplayData must still use moneyline for participants.
+	rawEvent := handlers.RawGammaEvent{
+		ID:       "mlb-game",
+		Title:    "Yankees vs Red Sox",
+		Category: "Sports",
+		GameID:   handlers.FlexString("789012"),
+		Tags:     []handlers.RawGammaTag{{Slug: "mlb"}},
+		Markets: []handlers.RawGammaMarket{
+			{
+				ID: "spread-market", SportsMarketType: "spread",
+				Liquidity: handlers.FlexFloat(1000000), // Very high liquidity
+				OutcomesRaw: `["Yankees -1.5", "Red Sox +1.5"]`, OutcomePricesRaw: `["0.52", "0.48"]`,
+			},
+			{
+				ID: "moneyline-market", SportsMarketType: "moneyline",
+				Liquidity: handlers.FlexFloat(100000), // Much lower liquidity
+				OutcomesRaw: `["Yankees", "Red Sox"]`, OutcomePricesRaw: `["0.55", "0.45"]`,
+			},
+		},
+	}
+
+	leaguesBySlug := map[string]db.League{
+		"mlb": {Sport: "mlb", Ordering: "away"}, // MLB uses away ordering
+	}
+
+	result := handlers.EnrichSportsEvent(rawEvent, map[string]db.PlyMktTeam{}, leaguesBySlug)
+
+	assert.NotNil(t, result)
+	assert.Equal(t, "versus_match", result.Type)
+	assert.Len(t, result.Participants, 2)
+
+	// DisplayData should use moneyline team names, not spread names
+	assert.Equal(t, "Yankees", result.Participants[0].Name)  // Away team (MLB ordering)
+	assert.Equal(t, "Red Sox", result.Participants[1].Name)  // Home team
+}
+
+// =============================================================================
+// CROSS-LEAGUE TESTS
+// =============================================================================
+
+func TestSameTeamNameDifferentLeagues(t *testing.T) {
+	// "Team Liquid" in both LoL (`lol|team liquid`) and CS2 (`csgo|team liquid`) leagues with different logos;
+	// an event tagged "cs2" must get the CS2 logo, not the LoL one.
+	rawEvent := handlers.RawGammaEvent{
+		ID:       "team-liquid-cs2-match",
+		Title:    "Team Liquid vs FaZe Clan",
+		Category: "Sports",
+		GameID:   handlers.FlexString("hltv789"),
+		Tags:     []handlers.RawGammaTag{{Slug: "cs2"}, {Slug: "esports"}},
+		Markets: []handlers.RawGammaMarket{
+			{
+				ID:               "cs2-market",
+				OutcomesRaw:      `["Team Liquid", "FaZe Clan"]`,
+				OutcomePricesRaw: `["0.60", "0.40"]`,
+			},
+		},
+	}
+
+	leaguesBySlug := map[string]db.League{
+		"cs2": {Sport: "cs2", Ordering: "home"},
+	}
+
+	teamsByName := map[string]db.PlyMktTeam{
+		"team liquid":         {Name: "Team Liquid", League: "lol", Logo: "liquid-lol-logo.png"},
+		"lol|team liquid":     {Name: "Team Liquid", League: "lol", Logo: "liquid-lol-logo.png"},
+		"cs2|team liquid":     {Name: "Team Liquid", League: "cs2", Logo: "liquid-cs2-logo.png"}, // Different logo
+	}
+
+	result := handlers.EnrichSportsEvent(rawEvent, teamsByName, leaguesBySlug)
+
+	assert.NotNil(t, result)
+	assert.Equal(t, "versus_match", result.Type)
+	assert.Len(t, result.Participants, 2)
+
+	// Should get CS2 logo because event is tagged "cs2"
+	assert.Equal(t, "Team Liquid", result.Participants[0].Name)
+	assert.Equal(t, "liquid-cs2-logo.png", result.Participants[0].ImageURL, "Should get CS2 logo, not LoL logo")
 }
