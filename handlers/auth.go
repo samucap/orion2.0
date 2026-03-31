@@ -284,6 +284,84 @@ func validatePassword(password string) error {
 	return nil
 }
 
+// OpaqueRefresh validates the incoming opaque refresh token (extracted
+// by middleware.RefreshToken), rotates it, issues a fresh access JWT in
+// the response body, and sets a new HttpOnly refresh cookie.
+// POST /api/auth/refresh-token
+func OpaqueRefresh(w http.ResponseWriter, r *http.Request) {
+	rawToken, ok := middleware.RawRefreshTokenFromContext(r.Context())
+	if !ok || rawToken == "" {
+		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	if refreshSvc == nil {
+		http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	fingerprint := refreshSvc.ComputeDeviceFingerprint(r)
+
+	pair, err := refreshSvc.ValidateAndRotate(r.Context(), rawToken, fingerprint)
+	if err != nil {
+		slog.Warn("refresh token rejected", "error", err)
+		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	setRefreshCookie(w, pair.RefreshToken)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(AuthResponse{
+		Token:     pair.AccessToken,
+		ExpiresAt: pair.ExpiresAt,
+	})
+}
+
+// OpaqueLogout revokes the current refresh token and clears the
+// HttpOnly cookie.
+// POST /api/auth/logout-token
+func OpaqueLogout(w http.ResponseWriter, r *http.Request) {
+	rawToken, ok := middleware.RawRefreshTokenFromContext(r.Context())
+	if !ok || rawToken == "" {
+		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	if refreshSvc != nil {
+		if err := refreshSvc.RevokeRefreshToken(r.Context(), rawToken); err != nil {
+			slog.Warn("failed to revoke refresh token on logout", "error", err)
+		}
+	}
+
+	clearRefreshCookie(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func setRefreshCookie(w http.ResponseWriter, rawToken string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "refreshToken",
+		Value:    rawToken,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+		Path:     "/",
+		MaxAge:   30 * 24 * 60 * 60,
+	})
+}
+
+func clearRefreshCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "refreshToken",
+		Value:    "",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+		Path:     "/",
+		MaxAge:   -1,
+	})
+}
+
 // setRefreshCookieIfAvailable issues an opaque refresh token and sets it
 // as an HttpOnly cookie when the RefreshService has been configured.
 // Failure to create the token is logged but does not block the response.
@@ -297,15 +375,7 @@ func setRefreshCookieIfAvailable(w http.ResponseWriter, r *http.Request, userID 
 		slog.Error("Failed to create refresh token", "error", err, "user_id", userID)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     "refreshToken",
-		Value:    rawRefresh,
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
-		Path:     "/",
-		MaxAge:   30 * 24 * 60 * 60,
-	})
+	setRefreshCookie(w, rawRefresh)
 }
 
 // generateJWT creates a JWT token for a user

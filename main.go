@@ -32,7 +32,6 @@ func main() {
 	slog.SetDefault(logger)
 
 	// Initialize database connection (optional)
-	var refreshSvc *auth.RefreshService
 	dbPool, err := db.InitDB()
 	if err != nil {
 		slog.Warn("Failed to initialize database, continuing without DB features", "error", err)
@@ -52,7 +51,7 @@ func main() {
 		}()
 
 		refreshStore := auth.NewPgRefreshTokenStore(dbPool)
-		refreshSvc = auth.NewRefreshService(refreshStore)
+		refreshSvc := auth.NewRefreshService(refreshStore)
 		handlers.SetRefreshService(refreshSvc)
 		slog.Info("Refresh token service initialized")
 	}
@@ -90,8 +89,8 @@ func main() {
 		r.Post("/signup", handlers.Signup)
 		r.With(middleware.Auth).Post("/refresh", handlers.RefreshToken)
 		r.With(middleware.Auth).Post("/logout", handlers.Logout)
-		r.With(auth.RefreshTokenMiddleware()).Post("/refresh-token", auth.RefreshHandler(refreshSvc))
-		r.With(auth.RefreshTokenMiddleware()).Post("/logout-token", auth.LogoutHandler(refreshSvc))
+		r.With(middleware.RefreshToken).Post("/refresh-token", handlers.OpaqueRefresh)
+		r.With(middleware.RefreshToken).Post("/logout-token", handlers.OpaqueLogout)
 	})
 
 	// Protected routes: always require valid JWT regardless of AUTH_ENABLED
