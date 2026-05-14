@@ -57,6 +57,7 @@ func main() {
 	}
 
 	// Initialize cache
+	// TODO: replace with redis
 	eventCache := cache.NewInMemoryCache()
 	handlers.SetCache(eventCache)
 	slog.Info("Cache initialized")

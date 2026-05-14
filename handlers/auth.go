@@ -2,8 +2,8 @@ package handlers
 
 import (
 	"crypto/rand"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -346,7 +346,7 @@ func setRefreshCookie(w http.ResponseWriter, rawToken string) {
 		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 		Path:     "/",
-		MaxAge:   30 * 24 * 60 * 60,
+		MaxAge:   24 * 60 * 60,
 	})
 }
 
