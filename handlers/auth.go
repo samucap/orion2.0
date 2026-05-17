@@ -385,12 +385,14 @@ func generateJWT(userID int64) (string, time.Time, error) {
 		return "", time.Time{}, errors.New("JWT_SECRET not set")
 	}
 
-	expiryMinutesStr := os.Getenv("JWT_EXPIRY_MINUTES")
-	expiryMinutes := 15 // default
-	if expiryMinutesStr != "" {
-		if parsedMinutes, err := strconv.Atoi(expiryMinutesStr); err == nil && parsedMinutes > 0 {
-			expiryMinutes = parsedMinutes
+	// TODO: Change this to config var. Default to an hour.
+	expiryMinutes := 60
+	if expiryMinutesStr := os.Getenv("JWT_EXPIRY_MINUTES"); expiryMinutesStr != "" {
+		parsedMinutes, err := strconv.Atoi(expiryMinutesStr)
+		if err != nil || parsedMinutes <= 0 {
+			return "", time.Time{}, fmt.Errorf("invalid value for JWT_EXPIRY_MINUTES: %s", expiryMinutesStr)
 		}
+		expiryMinutes = parsedMinutes
 	}
 
 	issuedAt := time.Now()
