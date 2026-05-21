@@ -29,12 +29,16 @@ type NavItem struct {
 	TotalMarkets int           `json:"total_markets"`
 }
 
+type GetTopNavRequest struct {
+	Cat string `json:"cat" validate:"omitempty,alphanum"`
+}
+
 // GetTopNav handles GET /top-nav endpoint
-func GetTopNav(w http.ResponseWriter, r *http.Request) {
+func GetTopNav(w http.ResponseWriter, r *http.Request, req GetTopNavRequest) {
 	// Get database connection from context (set in main)
 	// For now, we'll use stubbed data, but the structure is ready for real DB queries
 
-	cat := r.URL.Query().Get("cat")
+	cat := req.Cat
 	navItems, err := db.QueryTopNav(r.Context(), cat)
 	if err != nil {
 		// Log the actual error for debugging

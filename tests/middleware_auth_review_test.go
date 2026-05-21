@@ -113,7 +113,7 @@ func TestProtectedTopNav_WithBearerTokenSucceeds(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Use(middleware.Auth)
-	r.Get("/api/top-nav", handlers.GetTopNav)
+	r.Get("/api/top-nav", middleware.ValidateQuery(handlers.GetTopNav))
 
 	tokenStr := issueTestToken(t, 7)
 	req := httptest.NewRequest(http.MethodGet, "/api/top-nav", nil)

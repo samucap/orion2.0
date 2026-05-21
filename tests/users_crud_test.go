@@ -96,7 +96,7 @@ func TestUpdateProfileEmail_Success(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Use(middleware.Auth)
-	r.Put("/profile/email", handlers.UpdateProfileEmail)
+	r.Put("/profile/email", middleware.ValidateBody(handlers.UpdateProfileEmail))
 
 	tokenStr := issueTestToken(t, userID)
 
@@ -155,7 +155,7 @@ func TestUpdateProfileEmail_WrongPassword(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Use(middleware.Auth)
-	r.Put("/profile/email", handlers.UpdateProfileEmail)
+	r.Put("/profile/email", middleware.ValidateBody(handlers.UpdateProfileEmail))
 
 	tokenStr := issueTestToken(t, userID)
 	body, _ := json.Marshal(map[string]string{
@@ -198,7 +198,7 @@ func TestUpdateProfileEmail_InvalidJSON(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Use(middleware.Auth)
-	r.Put("/profile/email", handlers.UpdateProfileEmail)
+	r.Put("/profile/email", middleware.ValidateBody(handlers.UpdateProfileEmail))
 
 	tokenStr := issueTestToken(t, userID)
 
@@ -240,7 +240,7 @@ func TestUpdateProfilePassword_Success(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Use(middleware.Auth)
-	r.Put("/profile/password", handlers.UpdateProfilePassword)
+	r.Put("/profile/password", middleware.ValidateBody(handlers.UpdateProfilePassword))
 
 	tokenStr := issueTestToken(t, userID)
 	body, _ := json.Marshal(map[string]string{
@@ -286,7 +286,7 @@ func TestUpdateProfilePassword_WeakNewPassword(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Use(middleware.Auth)
-	r.Put("/profile/password", handlers.UpdateProfilePassword)
+	r.Put("/profile/password", middleware.ValidateBody(handlers.UpdateProfilePassword))
 
 	tokenStr := issueTestToken(t, userID)
 	body, _ := json.Marshal(map[string]string{
@@ -329,7 +329,7 @@ func TestUpdateProfilePassword_InvalidJSON(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Use(middleware.Auth)
-	r.Put("/profile/password", handlers.UpdateProfilePassword)
+	r.Put("/profile/password", middleware.ValidateBody(handlers.UpdateProfilePassword))
 
 	tokenStr := issueTestToken(t, userID)
 
@@ -370,7 +370,7 @@ func TestDeleteAccount_Success(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Use(middleware.Auth)
-	r.Delete("/profile", handlers.DeleteAccount)
+	r.Delete("/profile", middleware.ValidateBody(handlers.DeleteAccount))
 
 	tokenStr := issueTestToken(t, userID)
 	body, _ := json.Marshal(map[string]string{
@@ -415,7 +415,7 @@ func TestDeleteAccount_WrongPassword(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Use(middleware.Auth)
-	r.Delete("/profile", handlers.DeleteAccount)
+	r.Delete("/profile", middleware.ValidateBody(handlers.DeleteAccount))
 
 	tokenStr := issueTestToken(t, userID)
 	body, _ := json.Marshal(map[string]string{
@@ -456,7 +456,7 @@ func TestDeleteAccount_InvalidJSON(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Use(middleware.Auth)
-	r.Delete("/profile", handlers.DeleteAccount)
+	r.Delete("/profile", middleware.ValidateBody(handlers.DeleteAccount))
 
 	tokenStr := issueTestToken(t, userID)
 

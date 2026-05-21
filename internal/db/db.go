@@ -274,6 +274,7 @@ func QueryTopNav(ctx context.Context, cat string) ([]NavItem, error) {
 			item.Related = []RelatedItem{} // Ensure it's an empty array, not nil
 		}
 
+		// TODO: REVIEW THIS. i don't think it's correct. there's a trending tag
 		if item.Label == "All" {
 			item.Label = "Trending"
 		}

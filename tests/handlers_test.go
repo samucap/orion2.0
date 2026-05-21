@@ -183,7 +183,7 @@ func TestGetTopNav(t *testing.T) {
 				r.Use(middleware.Auth)
 			}
 
-			r.Get("/top-nav", handlers.GetTopNav)
+			r.Get("/top-nav", middleware.ValidateQuery(handlers.GetTopNav))
 
 			// Create request
 			req := httptest.NewRequest(http.MethodGet, "/top-nav", nil)

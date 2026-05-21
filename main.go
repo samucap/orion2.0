@@ -83,27 +83,27 @@ func main() {
 	// Cache management (always public)
 	r.Post("/cache/clear", handlers.ClearCache)
 
-	// Auth routes: public, rate-limited to prevent brute-force
-	r.Route("/api/auth", func(r chi.Router) {
-		r.Use(middleware.RateLimit(2, 5))
-		// TODO: need to sanitize /login, /signup,
-		r.Post("/", handlers.Login)
-		r.Post("/signup", handlers.Signup)
-		r.With(middleware.Auth).Post("/refresh", handlers.RefreshToken)
-		r.With(middleware.Auth).Post("/logout", handlers.Logout)
-		r.With(middleware.RefreshToken).Post("/refresh-token", handlers.OpaqueRefresh)
-		r.With(middleware.RefreshToken).Post("/logout-token", handlers.OpaqueLogout)
-	})
-
-	// Protected routes: always require valid JWT regardless of AUTH_ENABLED
+	// API routes
 	r.Route("/api", func(r chi.Router) {
-		r.Use(middleware.RateLimit(5, 10))
-		r.Use(middleware.Auth)
-		r.Get("/events-v2", handlers.GetEventsV2)
-		r.Get("/top-nav", handlers.GetTopNav)
-		r.Get("/profile", handlers.Profile)
-		r.Put("/profile", handlers.UpdateProfile)
-		r.Delete("/profile", handlers.DeleteAccount)
+		r.Route("/auth", func(r chi.Router) {
+			r.Use(middleware.RateLimit(2, 5))
+			r.Post("/", middleware.ValidateBody(handlers.Login))
+			r.Post("/signup", middleware.ValidateBody(handlers.Signup))
+			r.With(middleware.Auth).Post("/refresh", handlers.RefreshToken)
+			r.With(middleware.Auth).Post("/logout", handlers.Logout)
+			r.With(middleware.RefreshToken).Post("/refresh-token", handlers.OpaqueRefresh)
+			r.With(middleware.RefreshToken).Post("/logout-token", handlers.OpaqueLogout)
+		})
+
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.RateLimit(5, 10))
+			r.Use(middleware.Auth)
+			r.Get("/events-v2", middleware.ValidateQuery(handlers.GetEventsV2))
+			r.Get("/top-nav", middleware.ValidateQuery(handlers.GetTopNav))
+			r.Get("/profile", handlers.Profile)
+			r.Put("/profile", middleware.ValidateBody(handlers.UpdateProfile))
+			r.Delete("/profile", middleware.ValidateBody(handlers.DeleteAccount))
+		})
 	})
 
 	// Server configuration
