@@ -159,6 +159,7 @@ func InitDB() (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
+// NOT USED
 // QueryEvents returns a list of events (currently stubbed with hardcoded data)
 func QueryEvents(ctx context.Context) ([]Event, error) {
 	// TODO: Replace with actual database query
@@ -182,6 +183,7 @@ func QueryEvents(ctx context.Context) ([]Event, error) {
 
 // QueryTopNav returns a list of navigation items from the database
 func QueryTopNav(ctx context.Context, cat string) ([]NavItem, error) {
+	// TODO: Remove this as if DB is not available, the server won't start.
 	if Pool == nil {
 		// Return mock data for testing when database is not available
 		return []NavItem{

@@ -86,6 +86,7 @@ func main() {
 	// Auth routes: public, rate-limited to prevent brute-force
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Use(middleware.RateLimit(2, 5))
+		// TODO: need to sanitize /login, /signup,
 		r.Post("/", handlers.Login)
 		r.Post("/signup", handlers.Signup)
 		r.With(middleware.Auth).Post("/refresh", handlers.RefreshToken)
@@ -98,7 +99,6 @@ func main() {
 	r.Route("/api", func(r chi.Router) {
 		r.Use(middleware.RateLimit(5, 10))
 		r.Use(middleware.Auth)
-		r.Get("/events", handlers.GetEvents)
 		r.Get("/events-v2", handlers.GetEventsV2)
 		r.Get("/top-nav", handlers.GetTopNav)
 		r.Get("/profile", handlers.Profile)
