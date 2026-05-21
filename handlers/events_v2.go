@@ -35,41 +35,57 @@ func ClearCache(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"cache_cleared"}`))
 }
 
+type GetEventsV2Request struct {
+	TagID        string `json:"tag_id" validate:"omitempty,numeric"`
+	Cat          string `json:"cat" validate:"omitempty,numeric"`
+	Order        string `json:"order" validate:"omitempty,alphanum"`
+	Ascending    string `json:"ascending" validate:"omitempty,oneof=true false"`
+	Limit        string `json:"limit" validate:"omitempty,numeric"`
+	Active       string `json:"active" validate:"omitempty,oneof=true false"`
+	Closed       string `json:"closed" validate:"omitempty,oneof=true false"`
+	Offset       string `json:"offset" validate:"omitempty,numeric"`
+	EndDateMax   string `json:"end_date_max" validate:"omitempty"`
+	StartDateMin string `json:"start_date_min" validate:"omitempty"`
+	SpreadMax    string `json:"spread_max" validate:"omitempty,numeric"`
+	RewardMin    string `json:"rewardMin" validate:"omitempty,numeric"`
+	VolumeMin    string `json:"volume_min" validate:"omitempty,numeric"`
+	LiquidityMin string `json:"liquidity_min" validate:"omitempty,numeric"`
+	ExcludeTagID string `json:"exclude_tag_id" validate:"omitempty,numeric"`
+}
+
 // GetEventsV2 handles GET /events-v2 endpoint
 // Returns events with fixed classification logic and standardized V2 schema for frontend Event Cards
-func GetEventsV2(w http.ResponseWriter, r *http.Request) {
-	params := r.URL.Query()
-
+func GetEventsV2(w http.ResponseWriter, r *http.Request, req GetEventsV2Request) {
 	// Helper: return param value or fallback default
-	getParam := func(key, fallback string) string {
-		if v := params.Get(key); v != "" {
-			return v
+	getParam := func(val, fallback string) string {
+		if val != "" {
+			return val
 		}
 		return fallback
 	}
 
 	// tag_id: accept both "tag_id" and legacy "cat" (tag_id takes priority)
-	tagID := params.Get("tag_id")
+	tagID := req.TagID
 	if tagID == "" {
-		tagID = params.Get("cat")
+		tagID = req.Cat
 	}
 
 	// Params with defaults (preserve existing behavior when frontend omits them)
-	order := getParam("order", "volume24hr")
-	ascending := getParam("ascending", "false")
-	limit := getParam("limit", "50")
-	active := getParam("active", "true")
-	closed := getParam("closed", "false")
+	order := getParam(req.Order, "volume24hr")
+	ascending := getParam(req.Ascending, "false")
+	limit := getParam(req.Limit, "50")
+	active := getParam(req.Active, "true")
+	closed := getParam(req.Closed, "false")
 
 	// Optional params — only appended to Gamma URL if provided
-	offset := params.Get("offset")
-	endDateMax := params.Get("end_date_max")
-	startDateMin := params.Get("start_date_min")
-	spreadMax := params.Get("spread_max")
-	rewardMin := params.Get("rewardMin")
-	volMin := params.Get("volume_min")
-	liqMin := params.Get("liquidity_min")
-	excludeTagId := params.Get("exclude_tag_id")
+	offset := req.Offset
+	endDateMax := req.EndDateMax
+	startDateMin := req.StartDateMin
+	spreadMax := req.SpreadMax
+	rewardMin := req.RewardMin
+	volMin := req.VolumeMin
+	liqMin := req.LiquidityMin
+	excludeTagId := req.ExcludeTagID
 
 	// Build Polymarket Gamma API URL
 	gammaBase := `https://gamma-api.polymarket.com`

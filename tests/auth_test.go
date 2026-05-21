@@ -157,7 +157,7 @@ func setAuthEnv(t *testing.T) {
 func TestSignup_InvalidJSON(t *testing.T) {
 	setAuthEnv(t)
 	r := chi.NewRouter()
-	r.Post("/api/auth/signup", handlers.Signup)
+	r.Post("/api/auth/signup", middleware.ValidateBody(handlers.Signup))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/signup", bytes.NewReader([]byte(`not json`)))
 	req.Header.Set("Content-Type", "application/json")
@@ -170,7 +170,7 @@ func TestSignup_InvalidJSON(t *testing.T) {
 func TestSignup_MissingFields(t *testing.T) {
 	setAuthEnv(t)
 	r := chi.NewRouter()
-	r.Post("/api/auth/signup", handlers.Signup)
+	r.Post("/api/auth/signup", middleware.ValidateBody(handlers.Signup))
 
 	body := `{"email":"","password":""}`
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/signup", bytes.NewReader([]byte(body)))
@@ -184,7 +184,7 @@ func TestSignup_MissingFields(t *testing.T) {
 func TestSignup_WeakPassword(t *testing.T) {
 	setAuthEnv(t)
 	r := chi.NewRouter()
-	r.Post("/api/auth/signup", handlers.Signup)
+	r.Post("/api/auth/signup", middleware.ValidateBody(handlers.Signup))
 
 	tests := []struct {
 		name     string
@@ -216,7 +216,7 @@ func TestSignup_WeakPassword(t *testing.T) {
 func TestSignup_InvalidEmail(t *testing.T) {
 	setAuthEnv(t)
 	r := chi.NewRouter()
-	r.Post("/api/auth/signup", handlers.Signup)
+	r.Post("/api/auth/signup", middleware.ValidateBody(handlers.Signup))
 
 	body, _ := json.Marshal(map[string]string{
 		"email":    "not-an-email",
@@ -265,7 +265,7 @@ func TestSignup_Success_WithNullableAvatarSchema(t *testing.T) {
 	})
 
 	r := chi.NewRouter()
-	r.Post("/api/auth/signup", handlers.Signup)
+	r.Post("/api/auth/signup", middleware.ValidateBody(handlers.Signup))
 
 	body, _ := json.Marshal(map[string]string{
 		"email":    email,
@@ -291,7 +291,7 @@ func TestSignup_Success_WithNullableAvatarSchema(t *testing.T) {
 func TestLogin_InvalidJSON(t *testing.T) {
 	setAuthEnv(t)
 	r := chi.NewRouter()
-	r.Post("/api/auth/login", handlers.Login)
+	r.Post("/api/auth/login", middleware.ValidateBody(handlers.Login))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader([]byte(`{bad`)))
 	req.Header.Set("Content-Type", "application/json")
@@ -304,7 +304,7 @@ func TestLogin_InvalidJSON(t *testing.T) {
 func TestLogin_MissingFields(t *testing.T) {
 	setAuthEnv(t)
 	r := chi.NewRouter()
-	r.Post("/api/auth/login", handlers.Login)
+	r.Post("/api/auth/login", middleware.ValidateBody(handlers.Login))
 
 	body := `{"email":"","password":""}`
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader([]byte(body)))
@@ -799,7 +799,7 @@ func TestLogin_ValidCredentials_NullAvatarDoesNotBreakLogin(t *testing.T) {
 	require.Equal(t, "", u.Avatar, "avatar should normalize NULL to empty string")
 
 	r := chi.NewRouter()
-	r.Post("/api/auth/login", handlers.Login)
+	r.Post("/api/auth/login", middleware.ValidateBody(handlers.Login))
 
 	body, _ := json.Marshal(map[string]string{
 		"email":    email,

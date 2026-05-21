@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/go-playground/validator/v10"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/samucap/orion2.0/internal/auth"
 	"github.com/samucap/orion2.0/internal/db"
@@ -23,7 +22,7 @@ import (
 
 // AuthRequest represents the request body for signup/login
 type AuthRequest struct {
-	Email string `json:"email" validate:"required,email"`
+	Email string `json:"email" validate:"required,email,safe_string"`
 	PW    string `json:"password" validate:"required,min=12"`
 }
 
@@ -43,7 +42,6 @@ type LoginRequest struct {
 	AuthRequest
 }
 
-var validate = validator.New()
 
 var refreshSvc *auth.RefreshService
 
@@ -54,22 +52,8 @@ func SetRefreshService(s *auth.RefreshService) { refreshSvc = s }
 // Signup handles user registration
 // POST /api/auth/signup
 // Body: {"email": "user@example.com", "password": "Str0ng!Pass#2026"}
-func Signup(w http.ResponseWriter, r *http.Request) {
+func Signup(w http.ResponseWriter, r *http.Request, req SignupRequest) {
 	ctx := r.Context()
-
-	var req SignupRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		slog.Error("Failed to decode signup request", "error", err)
-		http.Error(w, `{"error":"Invalid JSON format"}`, http.StatusBadRequest)
-		return
-	}
-
-	// Validate request
-	if err := validate.Struct(req); err != nil {
-		slog.Error("Signup validation failed", "error", err, "email", req.Email)
-		http.Error(w, `{"error":"Invalid email or password format"}`, http.StatusBadRequest)
-		return
-	}
 
 	// Validate password complexity
 	if err := validatePassword(req.PW); err != nil {
@@ -117,22 +101,8 @@ func Signup(w http.ResponseWriter, r *http.Request) {
 // Login handles user authentication
 // POST /api/auth
 // Body: {"email": "user@example.com", "password": "Str0ng!Pass#2026"}
-func Login(w http.ResponseWriter, r *http.Request) {
+func Login(w http.ResponseWriter, r *http.Request, req LoginRequest) {
 	ctx := r.Context()
-
-	var req LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		slog.Error("Failed to decode login request", "error", err)
-		http.Error(w, `{"error":"Invalid JSON format"}`, http.StatusBadRequest)
-		return
-	}
-
-	// Validate request
-	if err := validate.Struct(req); err != nil {
-		slog.Error("Login validation failed", "error", err, "email", req.Email)
-		http.Error(w, `{"error":"Invalid email or password format"}`, http.StatusBadRequest)
-		return
-	}
 
 	// Get user by email
 	user, err := db.Users.GetUserByEmail(ctx, req.Email)
