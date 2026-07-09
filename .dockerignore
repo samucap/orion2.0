@@ -1,0 +1,43 @@
+# VCS / IDE / OS
+.git
+.github
+.cursor
+.DS_Store
+**/.DS_Store
+
+# Secrets and local env (never bake into image layers)
+.env
+.env.*
+!.env.example
+
+# Docs and non-runtime assets
+*.md
+README*
+LICENSE*
+
+# Tests and ad-hoc tools (not part of production binary)
+**/*_test.go
+tests/
+scripts/
+test_logos.go
+
+# Build artifacts / local outputs
+build/
+output/
+bin/
+dist/
+*.exe
+*.test
+*.out
+coverage*
+*.coverprofile
+
+# Docker meta (keep context lean)
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+
+# Go workspace junk
+vendor/
+.gocache/
+.gomodcache/
