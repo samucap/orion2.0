@@ -1,0 +1,30 @@
+# Local-only runner for the single API container.
+# Secrets come from host .env at runtime (never baked into the image).
+#
+#   cp .env.example .env   # set JWT_SECRET (required), Postgres vars (optional)
+#   docker compose up --build
+#   curl -sS http://127.0.0.1:8080/health
+services:
+  api:
+    build: .
+    image: orion2.0:local
+    ports:
+      - "${PORT:-8080}:8080"
+    env_file:
+      - .env
+    environment:
+      # Bind inside the container; host maps ${PORT:-8080} → 8080
+      PORT: "8080"
+      # Reach Postgres on the host (Docker Desktop / Compose host gateway)
+      POSTGRES_HOST: ${POSTGRES_HOST:-host.docker.internal}
+    # Linux: resolve host.docker.internal (Docker Desktop provides this already)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Uncomment if the app ever needs a writable temp dir under read-only root:
+    # tmpfs:
+    #   - /tmp
