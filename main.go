@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 	"github.com/joho/godotenv"
 	"github.com/samucap/orion2.0/handlers"
 	"github.com/samucap/orion2.0/internal/auth"
@@ -25,6 +26,7 @@ func main() {
 		slog.Warn("No .env file found, using system environment variables")
 	}
 
+	currEnv := os.Getenv("ENV")
 	// Initialize structured logging
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -72,7 +74,19 @@ func main() {
 	r.Use(chiMiddleware.Recoverer)
 	r.Use(chiMiddleware.Timeout(60 * time.Second))
 	r.Use(securityHeaders)
+	clientOrigin := os.Getenv("CLIENT_URL")
+	corsOpts := cors.Options{
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Authorization", "Content-Type"},
+		AllowCredentials: false,
+		MaxAge:           300, // Maximum value not ignored by any of major browsers
+	}
 
+	if clientOrigin != "" {
+		corsOpts.AllowedOrigins = []string{clientOrigin}
+	}
+
+	r.Use(cors.Handler(corsOpts))
 	// Health check (always public)
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -126,7 +140,7 @@ func main() {
 
 	// Start server in a goroutine
 	go func() {
-		slog.Info("Starting server", "port", port)
+		slog.Info("Starting server", "currEnv", currEnv, "port", port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("Server failed to start", "error", err)
 			os.Exit(1)
