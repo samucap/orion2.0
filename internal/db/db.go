@@ -119,6 +119,7 @@ type League struct {
 
 // InitDB initializes the PostgreSQL connection pool
 func InitDB() (*pgxpool.Pool, error) {
+	currEnv := os.Getenv("ENV")
 	user := os.Getenv("POSTGRES_USER")
 	password := os.Getenv("POSTGRES_PASSWORD")
 	dbname := os.Getenv("POSTGRES_DB")
@@ -132,8 +133,11 @@ func InitDB() (*pgxpool.Pool, error) {
 	}
 
 	// Build connection string
-	connString := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
-		user, password, host, port, dbname)
+	connString := fmt.Sprintf("postgres://%s:%s@%s:%s/%s", user, password, host, port, dbname)
+
+	if currEnv == "prod" {
+		connString += "?channel_binding=require&sslmode=require"
+	}
 
 	config, err := pgxpool.ParseConfig(connString)
 	if err != nil {
