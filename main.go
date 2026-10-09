@@ -67,6 +67,12 @@ func main() {
 	// Create router
 	r := chi.NewRouter()
 
+	// Middleware stack
+	r.Use(chiMiddleware.RequestID)
+	r.Use(chiMiddleware.RealIP)
+	r.Use(chiMiddleware.Logger)
+	r.Use(chiMiddleware.Recoverer)
+	r.Use(chiMiddleware.Timeout(60 * time.Second))
 	clientOrigin := os.Getenv("CLIENT_URL")
 	corsOpts := cors.Options{
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
@@ -79,13 +85,7 @@ func main() {
 		corsOpts.AllowedOrigins = []string{clientOrigin}
 	}
 
-	// Middleware stack
 	r.Use(cors.Handler(corsOpts))
-	r.Use(chiMiddleware.RequestID)
-	r.Use(chiMiddleware.RealIP)
-	r.Use(chiMiddleware.Logger)
-	r.Use(chiMiddleware.Recoverer)
-	r.Use(chiMiddleware.Timeout(60 * time.Second))
 	r.Use(securityHeaders)
 
 	// Health check (always public)
