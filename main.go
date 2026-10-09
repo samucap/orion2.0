@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 	"github.com/joho/godotenv"
 	"github.com/samucap/orion2.0/handlers"
 	"github.com/samucap/orion2.0/internal/auth"
@@ -82,6 +83,14 @@ func main() {
 
 	// Cache management (always public)
 	r.Post("/cache/clear", handlers.ClearCache)
+
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   []string{"https://https://www.xuxuzin.xyz", "http://https://adel-sams-projects-cc732c5b.vercel.app"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Authorization", "Content-Type"},
+		AllowCredentials: false,
+		MaxAge:           300, // Maximum value not ignored by any of major browsers
+	}))
 
 	// API routes
 	r.Route("/api", func(r chi.Router) {
