@@ -69,7 +69,8 @@ func main() {
 
 	// Middleware stack
 	r.Use(chiMiddleware.RequestID)
-	r.Use(chiMiddleware.RealIP)
+	r.Use(middleware.ClientIPFromHeader("X-Forwarded-For"))
+	r.Use(middleware.NoCache)
 	r.Use(chiMiddleware.Logger)
 	r.Use(chiMiddleware.Recoverer)
 	r.Use(chiMiddleware.Timeout(60 * time.Second))
