@@ -103,6 +103,7 @@ func main() {
 	r.Route("/api", func(r chi.Router) {
 		r.Route("/auth", func(r chi.Router) {
 			r.Use(middleware.RateLimit(2, 5))
+			// TODO: limit failed login attempts
 			r.Post("/", middleware.ValidateBody(handlers.Login))
 			r.Post("/signup", middleware.ValidateBody(handlers.Signup))
 			r.With(middleware.Auth).Post("/refresh", handlers.RefreshToken)

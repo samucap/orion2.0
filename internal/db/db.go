@@ -222,33 +222,47 @@ func QueryTopNav(ctx context.Context, cat string) ([]NavItem, error) {
 		parentTagID = cat
 	}
 
+	// related holds the top 100 child tags by 24h volume. The LATERAL subquery
+	// is served by idx_tags_parent_vol24 (scripts/create_tags_indexes.sql).
 	q := `SELECT
 		t.id,
 		t.label,
 		t.slug,
-		COALESCE(
-			jsonb_agg(
-				jsonb_build_object(
-					'id', rt.id,
-					'label', rt.label,
-					'slug', rt.slug,
-					'total_vol', COALESCE(rt.total_vol, 0),
-					'total_vol_24hr', COALESCE(rt.total_vol_24hr, 0),
-					'total_liq', COALESCE(rt.total_liq, 0),
-					'total_markets', COALESCE(rt.total_markets, 0)
-				)
-				ORDER BY COALESCE(rt.total_vol_24hr, 0) DESC
-			) FILTER (WHERE rt.id IS NOT NULL),
-			'[]'::jsonb
-		) AS related,
+		COALESCE(r.related, '[]'::jsonb) AS related,
 		COALESCE(t.total_vol, 0),
 		COALESCE(t.total_vol_24hr, 0),
 		COALESCE(t.total_liq, 0),
 		COALESCE(t.total_markets, 0)
 	FROM tags AS t
-	LEFT JOIN tags AS rt ON rt.parent_tag_id = t.id
+	LEFT JOIN LATERAL (
+		SELECT jsonb_agg(
+			jsonb_build_object(
+				'id', rt.id,
+				'label', rt.label,
+				'slug', rt.slug,
+				'total_vol', rt.total_vol,
+				'total_vol_24hr', rt.total_vol_24hr,
+				'total_liq', rt.total_liq,
+				'total_markets', rt.total_markets
+			)
+			ORDER BY rt.total_vol_24hr DESC
+		) AS related
+		FROM (
+			SELECT
+				id,
+				label,
+				slug,
+				COALESCE(total_vol, 0) AS total_vol,
+				COALESCE(total_vol_24hr, 0) AS total_vol_24hr,
+				COALESCE(total_liq, 0) AS total_liq,
+				COALESCE(total_markets, 0) AS total_markets
+			FROM tags
+			WHERE parent_tag_id = t.id
+			ORDER BY COALESCE(total_vol_24hr, 0) DESC
+			LIMIT 100
+		) AS rt
+	) AS r ON true
 	WHERE t.parent_tag_id = $1
-	GROUP BY t.id, t.label, t.slug, t.total_vol, t.total_vol_24hr, t.total_liq, t.total_markets
 	ORDER BY COALESCE(t.total_vol_24hr, 0) DESC`
 
 	rows, err := Pool.Query(ctx, q, parentTagID)
