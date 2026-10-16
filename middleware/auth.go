@@ -19,7 +19,9 @@ const (
 )
 
 // Claims represents the JWT claims issued by the auth handlers.
+// Role is a private claim copied from users.role. It is not accepted from clients.
 type Claims struct {
+	Role string `json:"role"`
 	jwt.RegisteredClaims
 }
 
@@ -85,6 +87,11 @@ func Auth(cfg auth.Config) func(http.Handler) http.Handler {
 				return
 			}
 
+			if !auth.ValidRole(claims.Role) {
+				http.Error(w, `{"error":"Invalid or expired token"}`, http.StatusUnauthorized)
+				return
+			}
+
 			blacklisted, err := db.TokenBlacklist.IsTokenBlacklisted(r.Context(), claims.ID)
 			if err != nil {
 				http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
@@ -98,6 +105,21 @@ func Auth(cfg auth.Config) func(http.Handler) http.Handler {
 			ctx := context.WithValue(r.Context(), claimsKey, claims)
 			ctx = context.WithValue(ctx, userIDKey, userID)
 			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// RequireRole allows only tokens whose role claim equals role.
+// Use it on mutating routes. Demo sessions fail with 403.
+func RequireRole(role string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			claims, ok := UserFromContext(r.Context())
+			if !ok || claims.Role != role {
+				http.Error(w, `{"error":"Forbidden"}`, http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
 		})
 	}
 }

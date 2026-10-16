@@ -63,8 +63,22 @@ func main() {
 
 		refreshStore := auth.NewPgRefreshTokenStore(dbPool)
 		refreshSvc := auth.NewRefreshService(refreshStore, authCfg)
+		refreshSvc.SetUserRole(func(ctx context.Context, userID int64) (string, error) {
+			user, err := db.Users.GetUserByID(ctx, userID)
+			if err != nil {
+				return "", err
+			}
+			return user.Role, nil
+		})
 		handlers.SetRefreshService(refreshSvc)
 		slog.Info("Refresh token service initialized")
+
+		demoCtx, demoCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := handlers.EnsureDemoUser(demoCtx); err != nil {
+			slog.Error("Failed to ensure demo user", "error", err)
+			os.Exit(1)
+		}
+		demoCancel()
 	}
 
 	// Initialize cache
@@ -123,6 +137,7 @@ func main() {
 			r.Use(middleware.RateLimit(2, 5))
 			// TODO: limit failed login attempts
 			r.Post("/", middleware.ValidateBody(handlers.Login))
+			r.Post("/demo", middleware.ValidateBody(handlers.DemoLogin))
 			r.Post("/signup", middleware.ValidateBody(handlers.Signup))
 			r.With(middleware.Auth(authCfg)).Post("/logout", handlers.Logout)
 			// Cookie-only auth: reject cross-site callers before reading the cookie.
@@ -144,10 +159,10 @@ func main() {
 			r.Get("/dashboard/correlation", handlers.DashboardCorrelation)
 			r.Get("/dashboard/arbitrage", handlers.DashboardArbitrage)
 			r.Get("/profile", handlers.Profile)
-			r.Put("/profile", middleware.ValidateBody(handlers.UpdateProfile))
-			r.Put("/profile/password", middleware.ValidateBody(handlers.UpdateProfilePassword))
-			r.Delete("/profile", middleware.ValidateBody(handlers.DeleteAccount))
-			r.Post("/cache/clear", handlers.ClearCache)
+			r.With(middleware.RequireRole(auth.RoleUser)).Put("/profile", middleware.ValidateBody(handlers.UpdateProfile))
+			r.With(middleware.RequireRole(auth.RoleUser)).Put("/profile/password", middleware.ValidateBody(handlers.UpdateProfilePassword))
+			r.With(middleware.RequireRole(auth.RoleUser)).Delete("/profile", middleware.ValidateBody(handlers.DeleteAccount))
+			r.With(middleware.RequireRole(auth.RoleUser)).Post("/cache/clear", handlers.ClearCache)
 		})
 	})
 

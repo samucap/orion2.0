@@ -44,9 +44,10 @@ type RefreshToken struct {
 // TokenPair is returned by ValidateAndRotate: a fresh access JWT plus
 // the raw opaque refresh token that must be set as an HttpOnly cookie.
 type TokenPair struct {
-	AccessToken  string
-	RefreshToken string // raw opaque value — never expose in JSON
-	ExpiresAt    time.Time
+	AccessToken      string
+	RefreshToken     string // raw opaque value — never expose in JSON
+	ExpiresAt        time.Time
+	RefreshExpiresAt time.Time
 }
 
 // RefreshTokenStore abstracts persistence so the service can be tested

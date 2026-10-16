@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS users (
     email       TEXT NOT NULL UNIQUE,
     pw          TEXT NOT NULL,
     avatar      TEXT NOT NULL DEFAULT '',
+    role        TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'demo')),
     last_login  TIMESTAMPTZ,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()

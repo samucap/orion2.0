@@ -105,6 +105,7 @@ func issueTestToken(t *testing.T, userID int64) string {
 	claims := jwt.MapClaims{
 		"sub":  strconv.FormatInt(userID, 10),
 		"jti":  jti,
+		"role": auth.RoleUser,
 		"iat":  time.Now().Unix(),
 		"exp":  time.Now().Add(15 * time.Minute).Unix(),
 	}
@@ -118,9 +119,10 @@ func issueTestTokenCustom(t *testing.T, userID int64, jti *string, exp time.Time
 	t.Helper()
 
 	claims := jwt.MapClaims{
-		"sub": strconv.FormatInt(userID, 10),
-		"iat": time.Now().Unix(),
-		"exp": exp.Unix(),
+		"sub":  strconv.FormatInt(userID, 10),
+		"role": auth.RoleUser,
+		"iat":  time.Now().Unix(),
+		"exp":  exp.Unix(),
 	}
 	if jti != nil {
 		claims["jti"] = *jti
@@ -136,10 +138,11 @@ func issueTestTokenCustom(t *testing.T, userID int64, jti *string, exp time.Time
 func issueTestTokenCustomSub(t *testing.T, sub, jti string) string {
 	t.Helper()
 	claims := jwt.MapClaims{
-		"sub": sub,
-		"jti": jti,
-		"iat": time.Now().Unix(),
-		"exp": time.Now().Add(15 * time.Minute).Unix(),
+		"sub":  sub,
+		"jti":  jti,
+		"role": auth.RoleUser,
+		"iat":  time.Now().Unix(),
+		"exp":  time.Now().Add(15 * time.Minute).Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	s, err := token.SignedString([]byte(testJWTSecret))

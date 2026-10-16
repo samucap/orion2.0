@@ -26,8 +26,16 @@ const refreshTokenBytes = 32 // 256 bits of entropy
 // RefreshService encapsulates all refresh-token business logic.
 // The store is injected so tests can substitute an in-memory mock.
 type RefreshService struct {
-	store RefreshTokenStore
-	cfg   Config
+	store    RefreshTokenStore
+	cfg      Config
+	userRole func(ctx context.Context, userID int64) (string, error)
+}
+
+// SetUserRole supplies the database role used when a refresh mints a new
+// access token. When unset, rotation keeps the previous behavior: role
+// "user" and a sliding RefreshTTL. Production sets this from users.role.
+func (s *RefreshService) SetUserRole(fn func(ctx context.Context, userID int64) (string, error)) {
+	s.userRole = fn
 }
 
 // NewRefreshService creates a RefreshService that signs access tokens and
@@ -87,6 +95,24 @@ func (s *RefreshService) CreateRefreshToken(ctx context.Context, userID int64, f
 	return raw, nil
 }
 
+// CreateRefreshTokenUntil persists a refresh token that dies at expiresAt.
+// Demo sessions use this so later rotations can copy the same deadline.
+func (s *RefreshService) CreateRefreshTokenUntil(ctx context.Context, userID int64, fingerprint string, expiresAt time.Time) (string, error) {
+	if !expiresAt.After(time.Now()) {
+		return "", ErrTokenExpired
+	}
+
+	raw := s.GenerateOpaqueRefreshToken()
+	hash, err := s.HashRefreshToken(raw)
+	if err != nil {
+		return "", fmt.Errorf("hash refresh token: %w", err)
+	}
+	if err := s.store.InsertRefreshToken(ctx, hash, userID, fingerprint, expiresAt); err != nil {
+		return "", fmt.Errorf("persist refresh token: %w", err)
+	}
+	return raw, nil
+}
+
 // ValidateAndRotate atomically claims (revokes) the incoming refresh token,
 // issues a replacement refresh token and a fresh access JWT, and returns
 // the pair. Two concurrent calls with the same token cannot both succeed.
@@ -131,20 +157,41 @@ func (s *RefreshService) ValidateAndRotate(ctx context.Context, rawRefreshToken 
 		return nil, ErrFingerprintMismatch
 	}
 
-	newRaw, err := s.CreateRefreshToken(ctx, claimed.UserID, fingerprint)
+	role := RoleUser
+	if s.userRole != nil {
+		role, err = s.userRole(ctx, claimed.UserID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve role: %w", err)
+		}
+		if !ValidRole(role) {
+			return nil, fmt.Errorf("resolve role: unknown role %q", role)
+		}
+	}
+
+	refreshExpiry := time.Now().Add(s.cfg.RefreshTTL)
+	var newRaw string
+	if role == RoleDemo {
+		// Keep the original absolute deadline. A sliding hour would never end
+		// while the tab keeps refreshing.
+		refreshExpiry = claimed.ExpiresAt
+		newRaw, err = s.CreateRefreshTokenUntil(ctx, claimed.UserID, fingerprint, refreshExpiry)
+	} else {
+		newRaw, err = s.CreateRefreshToken(ctx, claimed.UserID, fingerprint)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create replacement refresh token: %w", err)
 	}
 
-	accessToken, expiresAt, err := IssueAccessToken(s.cfg, claimed.UserID)
+	accessToken, expiresAt, err := IssueAccessToken(s.cfg, claimed.UserID, role)
 	if err != nil {
 		return nil, fmt.Errorf("issue access token: %w", err)
 	}
 
 	return &TokenPair{
-		AccessToken:  accessToken,
-		RefreshToken: newRaw,
-		ExpiresAt:    expiresAt,
+		AccessToken:      accessToken,
+		RefreshToken:     newRaw,
+		ExpiresAt:        expiresAt,
+		RefreshExpiresAt: refreshExpiry,
 	}, nil
 }
 

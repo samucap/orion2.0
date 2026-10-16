@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -155,6 +156,66 @@ func TestValidateAndRotate_Success(t *testing.T) {
 	oldRow, _ := store.GetByTokenHash(ctx, hashRaw(rawOld))
 	require.NotNil(t, oldRow)
 	assert.True(t, oldRow.Revoked, "old token should be revoked after rotation")
+
+	newRow, err := store.GetByTokenHash(ctx, hashRaw(pair.RefreshToken))
+	require.NoError(t, err)
+	require.NotNil(t, newRow)
+	assert.WithinDuration(t, time.Now().Add(DefaultRefreshTTL), newRow.ExpiresAt, 5*time.Second)
+}
+
+func TestValidateAndRotate_DemoKeepsAbsoluteExpiry(t *testing.T) {
+	svc, store := setupTestService(t)
+	svc.SetUserRole(func(context.Context, int64) (string, error) {
+		return RoleDemo, nil
+	})
+	ctx := context.Background()
+
+	rawOld := "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344"
+	fp := "stable-fingerprint"
+	deadline := time.Now().Add(40 * time.Minute)
+	seedToken(store, rawOld, 42, fp, deadline)
+
+	pair, err := svc.ValidateAndRotate(ctx, rawOld, fp)
+	require.NoError(t, err)
+	assert.Equal(t, RoleDemo, roleOf(t, pair.AccessToken))
+	assert.True(t, pair.RefreshExpiresAt.Equal(deadline))
+
+	newRow, err := store.GetByTokenHash(ctx, hashRaw(pair.RefreshToken))
+	require.NoError(t, err)
+	require.NotNil(t, newRow)
+	assert.True(t, newRow.ExpiresAt.Equal(deadline), "demo rotation must not slide the deadline")
+}
+
+func TestValidateAndRotate_RoleFollowsLatestLookup(t *testing.T) {
+	svc, store := setupTestService(t)
+	role := RoleUser
+	svc.SetUserRole(func(context.Context, int64) (string, error) {
+		return role, nil
+	})
+	ctx := context.Background()
+	fp := "stable-fingerprint"
+	raw := "11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd"
+	seedToken(store, raw, 7, fp, time.Now().Add(24*time.Hour))
+
+	first, err := svc.ValidateAndRotate(ctx, raw, fp)
+	require.NoError(t, err)
+	assert.Equal(t, RoleUser, roleOf(t, first.AccessToken))
+
+	role = RoleDemo
+	second, err := svc.ValidateAndRotate(ctx, first.RefreshToken, fp)
+	require.NoError(t, err)
+	assert.Equal(t, RoleDemo, roleOf(t, second.AccessToken))
+}
+
+func roleOf(t *testing.T, token string) string {
+	t.Helper()
+	claims := &accessClaims{}
+	parsed, err := jwt.ParseWithClaims(token, claims, func(*jwt.Token) (interface{}, error) {
+		return []byte(testSecret), nil
+	}, jwt.WithValidMethods([]string{"HS256"}))
+	require.NoError(t, err)
+	require.True(t, parsed.Valid)
+	return claims.Role
 }
 
 func TestValidateAndRotate_RevokedReplay(t *testing.T) {

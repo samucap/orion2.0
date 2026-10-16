@@ -26,6 +26,7 @@ type User struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	Avatar    string
+	Role      string
 }
 
 // UserStore defines the persistence operations needed by the auth/user handlers.
@@ -76,12 +77,12 @@ func CreateUser(ctx context.Context, email, pw string) (*User, error) {
 	}
 
 	q := `
-		INSERT INTO users (email, pw)
-		VALUES ($1, $2)
-		RETURNING id, email, COALESCE(avatar, '')`
+		INSERT INTO users (email, pw, role)
+		VALUES ($1, $2, 'user')
+		RETURNING id, email, COALESCE(avatar, ''), role`
 
 	var u User
-	err := Pool.QueryRow(ctx, q, email, pw).Scan(&u.ID, &u.Email, &u.Avatar)
+	err := Pool.QueryRow(ctx, q, email, pw).Scan(&u.ID, &u.Email, &u.Avatar, &u.Role)
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" { // unique violation
 			return nil, ErrEmailAlreadyExists
@@ -99,12 +100,12 @@ func GetUserByEmail(ctx context.Context, email string) (*User, error) {
 		return nil, fmt.Errorf("database not initialized")
 	}
 
-	q := `SELECT id, email, pw, COALESCE(avatar, '')
+	q := `SELECT id, email, pw, COALESCE(avatar, ''), role
 		FROM users
 		WHERE email = $1`
 
 	var u User
-	err := Pool.QueryRow(ctx, q, email).Scan(&u.ID, &u.Email, &u.PW, &u.Avatar)
+	err := Pool.QueryRow(ctx, q, email).Scan(&u.ID, &u.Email, &u.PW, &u.Avatar, &u.Role)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrUserNotFound
@@ -123,7 +124,7 @@ func GetUserByID(ctx context.Context, userID int64) (*User, error) {
 		return nil, fmt.Errorf("database not initialized")
 	}
 
-	q := `SELECT id, email, pw, last_login, created_at, updated_at, COALESCE(avatar, '')
+	q := `SELECT id, email, pw, last_login, created_at, updated_at, COALESCE(avatar, ''), role
 		FROM users
 		WHERE id = $1`
 
@@ -136,6 +137,7 @@ func GetUserByID(ctx context.Context, userID int64) (*User, error) {
 		&u.CreatedAt,
 		&u.UpdatedAt,
 		&u.Avatar,
+		&u.Role,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -216,5 +218,37 @@ func DeleteUser(ctx context.Context, userID int64) error {
 		return ErrUserNotFound
 	}
 
+	return nil
+}
+
+// CreateDemoUser inserts the portfolio demo account. Callers pass a bcrypt hash.
+func CreateDemoUser(ctx context.Context, email, pwHash string) error {
+	if Pool == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	q := `INSERT INTO users (email, pw, role) VALUES ($1, $2, 'demo')`
+	_, err := Pool.Exec(ctx, q, email, pwHash)
+	if err != nil {
+		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
+			return ErrEmailAlreadyExists
+		}
+		return fmt.Errorf("failed to create demo user: %w", err)
+	}
+	return nil
+}
+
+// SetUserRole updates users.role. The value is never taken from a request.
+func SetUserRole(ctx context.Context, userID int64, role string) error {
+	if Pool == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	q := `UPDATE users SET role = $1 WHERE id = $2`
+	res, err := Pool.Exec(ctx, q, role, userID)
+	if err != nil {
+		return fmt.Errorf("failed to set user role: %w", err)
+	}
+	if res.RowsAffected() == 0 {
+		return ErrUserNotFound
+	}
 	return nil
 }

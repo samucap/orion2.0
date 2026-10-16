@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"regexp"
@@ -85,7 +87,7 @@ func Signup(w http.ResponseWriter, r *http.Request, req SignupRequest) {
 		return
 	}
 
-	token, expiresAt, err := auth.IssueAccessToken(authCfg, user.ID)
+	token, expiresAt, err := auth.IssueAccessToken(authCfg, user.ID, roleOrUser(user))
 	if err != nil {
 		slog.Error("Failed to generate JWT", "error", err, "user_id", user.ID)
 		http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
@@ -133,7 +135,7 @@ func Login(w http.ResponseWriter, r *http.Request, req LoginRequest) {
 		// Don't fail the login for this
 	}
 
-	token, expiresAt, err := auth.IssueAccessToken(authCfg, user.ID)
+	token, expiresAt, err := auth.IssueAccessToken(authCfg, user.ID, roleOrUser(user))
 	if err != nil {
 		slog.Error("Failed to generate JWT", "error", err, "user_id", user.ID)
 		http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
@@ -148,6 +150,86 @@ func Login(w http.ResponseWriter, r *http.Request, req LoginRequest) {
 		Token:     token,
 		ExpiresAt: expiresAt,
 	})
+}
+
+// DemoRequest is an empty body. Unknown fields are rejected by ValidateBody,
+// so a client cannot choose the email, password, or role.
+type DemoRequest struct{}
+
+// DemoLogin signs in the server-configured demo user.
+// POST /api/auth/demo
+// Body: {}
+func DemoLogin(w http.ResponseWriter, r *http.Request, _ DemoRequest) {
+	email := os.Getenv("DEMO_USER_EMAIL")
+	if email == "" || os.Getenv("DEMO_USER_PW") == "" {
+		http.Error(w, `{"error":"Demo login is not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	user, err := db.Users.GetUserByEmail(r.Context(), email)
+	if err != nil || user.Role != auth.RoleDemo {
+		if err != nil && !errors.Is(err, db.ErrUserNotFound) {
+			slog.Error("Failed to look up demo user", "error", err)
+		}
+		http.Error(w, `{"error":"Demo login is not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	token, expiresAt, err := auth.IssueAccessToken(authCfg, user.ID, auth.RoleDemo)
+	if err != nil {
+		slog.Error("Failed to generate demo JWT", "error", err, "user_id", user.ID)
+		http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	setDemoRefreshCookie(w, r, user.ID)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(AuthResponse{
+		Token:     token,
+		ExpiresAt: expiresAt,
+	})
+}
+
+func roleOrUser(user *db.User) string {
+	if user.Role == "" {
+		return auth.RoleUser
+	}
+	return user.Role
+}
+
+// EnsureDemoUser creates or updates the demo account from the environment.
+// The password is hashed and never logged. Both variables must be set, or neither.
+func EnsureDemoUser(ctx context.Context) error {
+	email := os.Getenv("DEMO_USER_EMAIL")
+	password := os.Getenv("DEMO_USER_PW")
+	if email == "" && password == "" {
+		return nil
+	}
+	if email == "" || password == "" {
+		return errors.New("DEMO_USER_EMAIL and DEMO_USER_PW must both be set")
+	}
+	if err := validatePassword(password); err != nil {
+		return err
+	}
+
+	hashed, err := hashPassword(password)
+	if err != nil {
+		return err
+	}
+
+	user, err := db.Users.GetUserByEmail(ctx, email)
+	if errors.Is(err, db.ErrUserNotFound) {
+		return db.CreateDemoUser(ctx, email, hashed)
+	}
+	if err != nil {
+		return err
+	}
+	if err := db.Users.UpdateUserPassword(ctx, user.ID, hashed); err != nil {
+		return err
+	}
+	return db.SetUserRole(ctx, user.ID, auth.RoleDemo)
 }
 
 // Logout revokes the current session: it blacklists the access token (jti),
@@ -207,7 +289,7 @@ func OpaqueRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	setRefreshCookie(w, pair.RefreshToken)
+	setRefreshCookie(w, pair.RefreshToken, pair.RefreshExpiresAt)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(AuthResponse{
@@ -293,7 +375,12 @@ const (
 // domain, which makes this a first-party cookie. Calling the API directly
 // from another site would need SameSite=None, which reopens CSRF.
 // See README "Refresh cookie and CSRF".
-func setRefreshCookie(w http.ResponseWriter, rawToken string) {
+func setRefreshCookie(w http.ResponseWriter, rawToken string, expiresAt time.Time) {
+	// Ceil so a deadline a fraction of a second out still covers that second.
+	maxAge := int(math.Ceil(time.Until(expiresAt).Seconds()))
+	if maxAge < 1 {
+		maxAge = 1
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     refreshCookieName,
 		Value:    rawToken,
@@ -301,7 +388,7 @@ func setRefreshCookie(w http.ResponseWriter, rawToken string) {
 		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 		Path:     refreshCookiePath,
-		MaxAge:   int(refreshTTL().Seconds()),
+		MaxAge:   maxAge,
 	})
 }
 
@@ -336,10 +423,27 @@ func setRefreshCookieIfAvailable(w http.ResponseWriter, r *http.Request, userID 
 		return
 	}
 	fp := refreshSvc.ComputeDeviceFingerprint(r)
+	expiresAt := time.Now().Add(refreshTTL())
 	rawRefresh, err := refreshSvc.CreateRefreshToken(r.Context(), userID, fp)
 	if err != nil {
 		slog.Error("Failed to create refresh token", "error", err, "user_id", userID)
 		return
 	}
-	setRefreshCookie(w, rawRefresh)
+	setRefreshCookie(w, rawRefresh, expiresAt)
+}
+
+// setDemoRefreshCookie issues a refresh token whose deadline is one hour
+// from now and does not slide on later rotations.
+func setDemoRefreshCookie(w http.ResponseWriter, r *http.Request, userID int64) {
+	if refreshSvc == nil {
+		return
+	}
+	expiresAt := time.Now().Add(auth.DemoRefreshTTL)
+	fp := refreshSvc.ComputeDeviceFingerprint(r)
+	rawRefresh, err := refreshSvc.CreateRefreshTokenUntil(r.Context(), userID, fp, expiresAt)
+	if err != nil {
+		slog.Error("Failed to create demo refresh token", "error", err, "user_id", userID)
+		return
+	}
+	setRefreshCookie(w, rawRefresh, expiresAt)
 }
