@@ -18,6 +18,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/samucap/orion2.0/handlers"
+	"github.com/samucap/orion2.0/internal/auth"
 	"github.com/samucap/orion2.0/internal/db"
 	"github.com/samucap/orion2.0/middleware"
 	"github.com/stretchr/testify/assert"
@@ -131,8 +132,34 @@ func issueTestTokenCustom(t *testing.T, userID int64, jti *string, exp time.Time
 	return s
 }
 
+// issueTestTokenCustomSub signs a token with an arbitrary subject claim.
+func issueTestTokenCustomSub(t *testing.T, sub, jti string) string {
+	t.Helper()
+	claims := jwt.MapClaims{
+		"sub": sub,
+		"jti": jti,
+		"iat": time.Now().Unix(),
+		"exp": time.Now().Add(15 * time.Minute).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	s, err := token.SignedString([]byte(testJWTSecret))
+	require.NoError(t, err)
+	return s
+}
+
+// testAuthConfig returns the token config used by the Auth middleware in tests.
+func testAuthConfig(t *testing.T) auth.Config {
+	t.Helper()
+	cfg, err := auth.NewConfig(testJWTSecret, 15*time.Minute)
+	require.NoError(t, err)
+	return cfg
+}
+
 func setAuthEnv(t *testing.T) {
 	t.Helper()
+	handlers.SetAuthConfig(testAuthConfig(t))
+	t.Cleanup(func() { handlers.SetAuthConfig(auth.Config{}) })
+
 	origTokenBlacklist := db.TokenBlacklist
 	tb := &mockTokenBlacklist{blacklisted: make(map[string]bool)}
 	db.TokenBlacklist = tb
@@ -322,7 +349,7 @@ func TestLogin_MissingFields(t *testing.T) {
 func TestAuthMiddleware_MissingHeader(t *testing.T) {
 	setAuthEnv(t)
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Get("/secure", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -337,7 +364,7 @@ func TestAuthMiddleware_MissingHeader(t *testing.T) {
 func TestAuthMiddleware_InvalidFormat(t *testing.T) {
 	setAuthEnv(t)
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Get("/secure", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -353,7 +380,7 @@ func TestAuthMiddleware_InvalidFormat(t *testing.T) {
 func TestAuthMiddleware_InvalidToken(t *testing.T) {
 	setAuthEnv(t)
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Get("/secure", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -369,7 +396,7 @@ func TestAuthMiddleware_InvalidToken(t *testing.T) {
 func TestAuthMiddleware_ExpiredToken(t *testing.T) {
 	setAuthEnv(t)
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Get("/secure", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -394,7 +421,7 @@ func TestAuthMiddleware_ExpiredToken(t *testing.T) {
 func TestAuthMiddleware_ValidToken(t *testing.T) {
 	setAuthEnv(t)
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Get("/secure", func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := middleware.UserFromContext(r.Context())
 		if !ok {
@@ -427,7 +454,7 @@ func TestAuthMiddleware_ValidToken(t *testing.T) {
 func TestAuthMiddleware_WrongSigningKey(t *testing.T) {
 	setAuthEnv(t)
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Get("/secure", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -454,7 +481,7 @@ func TestAuthMiddleware_MissingJTI(t *testing.T) {
 	setAuthEnv(t)
 
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Get("/secure", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -476,7 +503,7 @@ func TestAuthMiddleware_BlacklistStoreError(t *testing.T) {
 	tb.isBlacklistedErr = errors.New("db failure")
 
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Get("/secure", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -498,7 +525,7 @@ func TestAuthMiddleware_BlacklistStoreError(t *testing.T) {
 func TestProfile_ValidToken(t *testing.T) {
 	setAuthEnv(t)
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Get("/api/protected/profile", handlers.Profile)
 
 	origUsers := db.Users
@@ -530,7 +557,7 @@ func TestProfile_ValidToken(t *testing.T) {
 func TestProfile_NoToken(t *testing.T) {
 	setAuthEnv(t)
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Get("/api/protected/profile", handlers.Profile)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/protected/profile", nil)
@@ -541,126 +568,14 @@ func TestProfile_NoToken(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Token refresh/logout + revocation tests (no database required)
+// Logout + revocation tests (no database required)
 // ---------------------------------------------------------------------------
-
-func TestRefreshToken_Valid(t *testing.T) {
-	setAuthEnv(t)
-
-	r := chi.NewRouter()
-	r.Use(middleware.Auth)
-	r.Post("/api/auth/refresh", handlers.RefreshToken)
-	r.Get("/secure", func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := middleware.UserFromContext(r.Context())
-		if !ok {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"sub": claims.Subject,
-			"jti": claims.ID,
-		})
-	})
-
-	origToken := issueTestToken(t, 42)
-
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
-	req.Header.Set("Authorization", "Bearer "+origToken)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	var resp handlers.AuthResponse
-	err := json.Unmarshal(w.Body.Bytes(), &resp)
-	require.NoError(t, err)
-	require.NotEmpty(t, resp.Token)
-
-	// Verify refreshed token is accepted by middleware.
-	req2 := httptest.NewRequest(http.MethodGet, "/secure", nil)
-	req2.Header.Set("Authorization", "Bearer "+resp.Token)
-	w2 := httptest.NewRecorder()
-	r.ServeHTTP(w2, req2)
-
-	assert.Equal(t, http.StatusOK, w2.Code)
-	var secureResp map[string]string
-	err = json.Unmarshal(w2.Body.Bytes(), &secureResp)
-	require.NoError(t, err)
-	assert.Equal(t, "42", secureResp["sub"])
-	assert.NotEmpty(t, secureResp["jti"])
-}
-
-func TestRefreshToken_MissingHeader(t *testing.T) {
-	setAuthEnv(t)
-
-	r := chi.NewRouter()
-	r.Use(middleware.Auth)
-	r.Post("/api/auth/refresh", handlers.RefreshToken)
-
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusUnauthorized, w.Code)
-}
-
-func TestRefreshToken_Expired(t *testing.T) {
-	setAuthEnv(t)
-
-	r := chi.NewRouter()
-	r.Use(middleware.Auth)
-	r.Post("/api/auth/refresh", handlers.RefreshToken)
-
-	claims := jwt.MapClaims{
-		"sub":  "42",
-		"jti":  "expired-jti",
-		"iat":  time.Now().Add(-2 * time.Hour).Unix(),
-		"exp":  time.Now().Add(-1 * time.Hour).Unix(),
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	s, err := token.SignedString([]byte(testJWTSecret))
-	require.NoError(t, err)
-
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
-	req.Header.Set("Authorization", "Bearer "+s)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusUnauthorized, w.Code)
-}
-
-func TestRefreshToken_BlacklistedRejected(t *testing.T) {
-	setAuthEnv(t)
-	tb := db.TokenBlacklist.(*mockTokenBlacklist)
-
-	userID := int64(42)
-	jti := fmt.Sprintf("revoked-jti-%d", time.Now().UnixNano())
-	exp := time.Now().Add(15 * time.Minute).Truncate(time.Second)
-	tokenJTI := jti
-	origToken := issueTestTokenCustom(t, userID, &tokenJTI, exp)
-
-	tb.mu.Lock()
-	tb.blacklisted[jti] = true
-	tb.mu.Unlock()
-
-	r := chi.NewRouter()
-	r.Use(middleware.Auth)
-	r.Post("/api/auth/refresh", handlers.RefreshToken)
-
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
-	req.Header.Set("Authorization", "Bearer "+origToken)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusUnauthorized, w.Code)
-}
 
 func TestLogout_BlacklistsToken(t *testing.T) {
 	setAuthEnv(t)
 
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Post("/api/auth/logout", handlers.Logout)
 	r.Get("/secure", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -694,7 +609,7 @@ func TestLogout_BlacklistTokenArgs(t *testing.T) {
 	tokenStr := issueTestTokenCustom(t, userID, &tokenJTI, exp)
 
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Post("/api/auth/logout", handlers.Logout)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
@@ -713,7 +628,7 @@ func TestLogout_SecondAttemptRejected(t *testing.T) {
 	setAuthEnv(t)
 
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Post("/api/auth/logout", handlers.Logout)
 
 	tokenStr := issueTestToken(t, 42)

@@ -1,3 +1,7 @@
+// Command test_logos manually checks team logo resolution with in-memory
+// fixtures (no database needed).
+//
+//	go run scripts/test_logos.go
 package main
 
 import (
@@ -7,7 +11,7 @@ import (
 	"github.com/samucap/orion2.0/internal/db"
 )
 
-func logoTest() {
+func main() {
 	fmt.Println("🧪 Testing Team Logo Resolution...")
 
 	// Test 1: Abbreviation fallback (NHL)

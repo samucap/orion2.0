@@ -12,7 +12,7 @@ const refreshTokenKey ctxKey = "refresh_raw_token"
 // Requests without the cookie receive a 401.
 //
 // Apply only to routes that consume refresh tokens
-// (e.g. /api/auth/refresh-token, /api/auth/logout-token).
+// (/api/auth/refresh-token).
 func RefreshToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie("refreshToken")

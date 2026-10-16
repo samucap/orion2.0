@@ -95,8 +95,8 @@ func TestUpdateProfileEmail_Success(t *testing.T) {
 	t.Cleanup(func() { db.Users = origUsers })
 
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
-	r.Put("/profile/email", middleware.ValidateBody(handlers.UpdateProfileEmail))
+	r.Use(middleware.Auth(testAuthConfig(t)))
+	r.Put("/profile/email", middleware.ValidateBody(handlers.UpdateProfile))
 
 	tokenStr := issueTestToken(t, userID)
 
@@ -154,8 +154,8 @@ func TestUpdateProfileEmail_WrongPassword(t *testing.T) {
 	t.Cleanup(func() { db.Users = origUsers })
 
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
-	r.Put("/profile/email", middleware.ValidateBody(handlers.UpdateProfileEmail))
+	r.Use(middleware.Auth(testAuthConfig(t)))
+	r.Put("/profile/email", middleware.ValidateBody(handlers.UpdateProfile))
 
 	tokenStr := issueTestToken(t, userID)
 	body, _ := json.Marshal(map[string]string{
@@ -197,8 +197,8 @@ func TestUpdateProfileEmail_InvalidJSON(t *testing.T) {
 	t.Cleanup(func() { db.Users = origUsers })
 
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
-	r.Put("/profile/email", middleware.ValidateBody(handlers.UpdateProfileEmail))
+	r.Use(middleware.Auth(testAuthConfig(t)))
+	r.Put("/profile/email", middleware.ValidateBody(handlers.UpdateProfile))
 
 	tokenStr := issueTestToken(t, userID)
 
@@ -239,7 +239,7 @@ func TestUpdateProfilePassword_Success(t *testing.T) {
 	t.Cleanup(func() { db.Users = origUsers })
 
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Put("/profile/password", middleware.ValidateBody(handlers.UpdateProfilePassword))
 
 	tokenStr := issueTestToken(t, userID)
@@ -285,7 +285,7 @@ func TestUpdateProfilePassword_WeakNewPassword(t *testing.T) {
 	t.Cleanup(func() { db.Users = origUsers })
 
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Put("/profile/password", middleware.ValidateBody(handlers.UpdateProfilePassword))
 
 	tokenStr := issueTestToken(t, userID)
@@ -328,7 +328,7 @@ func TestUpdateProfilePassword_InvalidJSON(t *testing.T) {
 	t.Cleanup(func() { db.Users = origUsers })
 
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Put("/profile/password", middleware.ValidateBody(handlers.UpdateProfilePassword))
 
 	tokenStr := issueTestToken(t, userID)
@@ -369,7 +369,7 @@ func TestDeleteAccount_Success(t *testing.T) {
 	t.Cleanup(func() { db.Users = origUsers })
 
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Delete("/profile", middleware.ValidateBody(handlers.DeleteAccount))
 
 	tokenStr := issueTestToken(t, userID)
@@ -414,7 +414,7 @@ func TestDeleteAccount_WrongPassword(t *testing.T) {
 	t.Cleanup(func() { db.Users = origUsers })
 
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Delete("/profile", middleware.ValidateBody(handlers.DeleteAccount))
 
 	tokenStr := issueTestToken(t, userID)
@@ -455,7 +455,7 @@ func TestDeleteAccount_InvalidJSON(t *testing.T) {
 	t.Cleanup(func() { db.Users = origUsers })
 
 	r := chi.NewRouter()
-	r.Use(middleware.Auth)
+	r.Use(middleware.Auth(testAuthConfig(t)))
 	r.Delete("/profile", middleware.ValidateBody(handlers.DeleteAccount))
 
 	tokenStr := issueTestToken(t, userID)

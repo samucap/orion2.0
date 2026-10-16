@@ -58,6 +58,18 @@ func (m *mockRefreshTokenStore) GetByTokenHash(_ context.Context, tokenHash stri
 	return &cp, nil
 }
 
+func (m *mockRefreshTokenStore) ClaimActive(_ context.Context, tokenHash string) (*RefreshToken, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tokens[tokenHash]
+	if !ok || t.Revoked || !time.Now().Before(t.ExpiresAt) {
+		return nil, nil
+	}
+	t.Revoked = true
+	cp := *t
+	return &cp, nil
+}
+
 func (m *mockRefreshTokenStore) RevokeByID(_ context.Context, id int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -87,12 +99,11 @@ func (m *mockRefreshTokenStore) RevokeAllForUser(_ context.Context, userID int64
 
 func setupTestService(t *testing.T) (*RefreshService, *mockRefreshTokenStore) {
 	t.Helper()
-	t.Setenv("JWT_SECRET", testSecret)
-	t.Setenv("JWT_EXPIRY_MINUTES", "15")
+	cfg, err := NewConfig(testSecret, 15*time.Minute)
+	require.NoError(t, err)
 
 	store := newMockStore()
-	svc := newRefreshServiceWithSecret(store, testSecret)
-	return svc, store
+	return NewRefreshService(store, cfg), store
 }
 
 func hashRaw(raw string) string {
@@ -231,4 +242,48 @@ func TestComputeDeviceFingerprint(t *testing.T) {
 
 	assert.NotEqual(t, svc.ComputeDeviceFingerprint(r1), svc.ComputeDeviceFingerprint(r3),
 		"different headers should produce different fingerprints")
+}
+
+func TestValidateAndRotate_ConcurrentClaimOnlyOneSucceeds(t *testing.T) {
+	svc, store := setupTestService(t)
+	ctx := context.Background()
+
+	raw := "9999999900000000999999990000000099999999000000009999999900000000"
+	fp := "stable-fingerprint"
+	seedToken(store, raw, 77, fp, time.Now().Add(24*time.Hour))
+
+	const n = 20
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	successes := 0
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := svc.ValidateAndRotate(ctx, raw, fp); err == nil {
+				mu.Lock()
+				successes++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	assert.Equal(t, 1, successes, "exactly one concurrent rotation may succeed")
+}
+
+func TestValidateAndRotate_NotFound(t *testing.T) {
+	svc, _ := setupTestService(t)
+	_, err := svc.ValidateAndRotate(context.Background(), "unknown-token", "fp")
+	assert.ErrorIs(t, err, ErrTokenNotFound)
+}
+
+func TestComputeDeviceFingerprint_IgnoresForwardedFor(t *testing.T) {
+	svc := &RefreshService{}
+	r1 := httptest.NewRequest(http.MethodGet, "/", nil)
+	r1.Header.Set("User-Agent", "TestAgent")
+	r1.Header.Set("X-Forwarded-For", "1.1.1.1")
+	r2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	r2.Header.Set("User-Agent", "TestAgent")
+	r2.Header.Set("X-Forwarded-For", "2.2.2.2")
+	assert.Equal(t, svc.ComputeDeviceFingerprint(r1), svc.ComputeDeviceFingerprint(r2))
 }

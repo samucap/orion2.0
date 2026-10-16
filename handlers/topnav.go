@@ -30,7 +30,7 @@ type NavItem struct {
 }
 
 type GetTopNavRequest struct {
-	Cat string `json:"cat" validate:"omitempty,alphanum"`
+	Cat string `json:"cat" validate:"omitempty,number,max=20"` // tag ID
 }
 
 // GetTopNav handles GET /top-nav endpoint

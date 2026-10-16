@@ -9,55 +9,31 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
-	"strconv"
 	"time"
-
-	"github.com/golang-jwt/jwt/v5"
 )
 
 // Sentinel errors returned by the service layer. Handlers map these to
 // appropriate HTTP status codes without leaking internal details.
 var (
-	ErrTokenNotFound    = errors.New("refresh token not found")
-	ErrTokenRevoked     = errors.New("refresh token has been revoked")
-	ErrTokenExpired     = errors.New("refresh token has expired")
+	ErrTokenNotFound       = errors.New("refresh token not found")
+	ErrTokenRevoked        = errors.New("refresh token has been revoked")
+	ErrTokenExpired        = errors.New("refresh token has expired")
 	ErrFingerprintMismatch = errors.New("device fingerprint mismatch")
 )
 
-const (
-	refreshTokenBytes = 32             // 256 bits of entropy
-	refreshTokenTTL   = 30 * 24 * time.Hour // 30 days
-)
+const refreshTokenBytes = 32 // 256 bits of entropy
 
 // RefreshService encapsulates all refresh-token business logic.
 // The store is injected so tests can substitute an in-memory mock.
 type RefreshService struct {
-	store     RefreshTokenStore
-	jwtSecret []byte
+	store RefreshTokenStore
+	cfg   Config
 }
 
-// NewRefreshService creates a RefreshService.  It reads JWT_SECRET from
-// the environment and panics when the secret is missing (same behaviour as
-// the existing middleware.Auth).
-func NewRefreshService(store RefreshTokenStore) *RefreshService {
-	secret := os.Getenv("JWT_SECRET")
-	if secret == "" {
-		panic("JWT_SECRET environment variable is required for RefreshService")
-	}
-	return &RefreshService{
-		store:     store,
-		jwtSecret: []byte(secret),
-	}
-}
-
-// newRefreshServiceWithSecret is a test-only constructor that accepts the
-// JWT secret directly so tests don't depend on environment variables.
-func newRefreshServiceWithSecret(store RefreshTokenStore, secret string) *RefreshService {
-	return &RefreshService{
-		store:     store,
-		jwtSecret: []byte(secret),
-	}
+// NewRefreshService creates a RefreshService that signs access tokens and
+// sets refresh-token lifetimes from cfg (see LoadConfig).
+func NewRefreshService(store RefreshTokenStore, cfg Config) *RefreshService {
+	return &RefreshService{store: store, cfg: cfg}
 }
 
 // GenerateOpaqueRefreshToken returns a cryptographically random hex string
@@ -81,13 +57,12 @@ func (s *RefreshService) HashRefreshToken(raw string) (string, error) {
 	return hex.EncodeToString(h[:]), nil
 }
 
-// ComputeDeviceFingerprint derives a stable per-device identifier from
-// request headers.  The fingerprint is a SHA-256 of the concatenation of
-// User-Agent, Accept-Language, and X-Forwarded-For.
+// ComputeDeviceFingerprint derives a stable per-browser identifier from
+// User-Agent and Accept-Language. The client IP is excluded on purpose: it
+// changes many times a day for legitimate users (mobile handoffs, carrier
+// NAT, IPv6 privacy addresses), and a mismatch revokes every session.
 func (s *RefreshService) ComputeDeviceFingerprint(r *http.Request) string {
-	data := r.Header.Get("User-Agent") +
-		"|" + r.Header.Get("Accept-Language") +
-		"|" + r.Header.Get("X-Forwarded-For")
+	data := r.Header.Get("User-Agent") + "|" + r.Header.Get("Accept-Language")
 	h := sha256.Sum256([]byte(data))
 	return hex.EncodeToString(h[:])
 }
@@ -104,7 +79,7 @@ func (s *RefreshService) CreateRefreshToken(ctx context.Context, userID int64, f
 		return "", fmt.Errorf("hash refresh token: %w", err)
 	}
 
-	expiresAt := time.Now().Add(refreshTokenTTL)
+	expiresAt := time.Now().Add(s.cfg.RefreshTTL)
 	if err := s.store.InsertRefreshToken(ctx, hash, userID, fingerprint, expiresAt); err != nil {
 		return "", fmt.Errorf("persist refresh token: %w", err)
 	}
@@ -112,9 +87,10 @@ func (s *RefreshService) CreateRefreshToken(ctx context.Context, userID int64, f
 	return raw, nil
 }
 
-// ValidateAndRotate validates the incoming raw refresh token, revokes it,
+// ValidateAndRotate atomically claims (revokes) the incoming refresh token,
 // issues a replacement refresh token and a fresh access JWT, and returns
-// the pair. If the token is revoked (replay) or the fingerprint changed,
+// the pair. Two concurrent calls with the same token cannot both succeed.
+// If the token was already revoked (replay) or the fingerprint changed,
 // ALL of the user's refresh tokens are revoked as a precaution.
 func (s *RefreshService) ValidateAndRotate(ctx context.Context, rawRefreshToken string, fingerprint string) (*TokenPair, error) {
 	hash, err := s.HashRefreshToken(rawRefreshToken)
@@ -122,48 +98,45 @@ func (s *RefreshService) ValidateAndRotate(ctx context.Context, rawRefreshToken 
 		return nil, ErrTokenNotFound
 	}
 
-	existing, err := s.store.GetByTokenHash(ctx, hash)
+	claimed, err := s.store.ClaimActive(ctx, hash)
 	if err != nil {
-		return nil, fmt.Errorf("lookup refresh token: %w", err)
-	}
-	if existing == nil {
-		return nil, ErrTokenNotFound
+		return nil, fmt.Errorf("claim refresh token: %w", err)
 	}
 
-	// Replay detection: a revoked token being presented means a leaked
-	// token was already rotated — revoke the entire family.
-	if existing.Revoked {
-		if revokeErr := s.store.RevokeAllForUser(ctx, existing.UserID); revokeErr != nil {
-			slog.Error("failed to revoke token family after replay", "user_id", existing.UserID, "error", revokeErr)
+	if claimed == nil {
+		// Nothing claimed: find out why so replays revoke the family.
+		existing, err := s.store.GetByTokenHash(ctx, hash)
+		if err != nil {
+			return nil, fmt.Errorf("lookup refresh token: %w", err)
 		}
-		return nil, ErrTokenRevoked
-	}
-
-	if time.Now().After(existing.ExpiresAt) {
+		if existing == nil {
+			return nil, ErrTokenNotFound
+		}
+		if existing.Revoked {
+			// A revoked token being presented means a leaked token was
+			// already rotated, so revoke the entire family.
+			if revokeErr := s.store.RevokeAllForUser(ctx, existing.UserID); revokeErr != nil {
+				slog.Error("failed to revoke token family after replay", "user_id", existing.UserID, "error", revokeErr)
+			}
+			return nil, ErrTokenRevoked
+		}
 		return nil, ErrTokenExpired
 	}
 
-	// Fingerprint drift signals a stolen token used from a different device.
-	if existing.DeviceFingerprint != fingerprint {
-		if revokeErr := s.store.RevokeAllForUser(ctx, existing.UserID); revokeErr != nil {
-			slog.Error("failed to revoke tokens after fingerprint mismatch", "user_id", existing.UserID, "error", revokeErr)
+	// Fingerprint drift signals a stolen token used from a different browser.
+	if claimed.DeviceFingerprint != fingerprint {
+		if revokeErr := s.store.RevokeAllForUser(ctx, claimed.UserID); revokeErr != nil {
+			slog.Error("failed to revoke tokens after fingerprint mismatch", "user_id", claimed.UserID, "error", revokeErr)
 		}
 		return nil, ErrFingerprintMismatch
 	}
 
-	// Revoke the old token before issuing a replacement (rotate).
-	if err := s.store.RevokeByID(ctx, existing.ID); err != nil {
-		return nil, fmt.Errorf("revoke old token: %w", err)
-	}
-
-	// Issue replacement refresh token.
-	newRaw, err := s.CreateRefreshToken(ctx, existing.UserID, fingerprint)
+	newRaw, err := s.CreateRefreshToken(ctx, claimed.UserID, fingerprint)
 	if err != nil {
 		return nil, fmt.Errorf("create replacement refresh token: %w", err)
 	}
 
-	// Issue fresh access JWT.
-	accessToken, expiresAt, err := s.issueAccessToken(existing.UserID)
+	accessToken, expiresAt, err := IssueAccessToken(s.cfg, claimed.UserID)
 	if err != nil {
 		return nil, fmt.Errorf("issue access token: %w", err)
 	}
@@ -193,37 +166,7 @@ func (s *RefreshService) RevokeRefreshToken(ctx context.Context, rawRefreshToken
 	return s.store.RevokeByID(ctx, existing.ID)
 }
 
-// issueAccessToken mints a short-lived HS256 JWT with the same claim
-// structure as handlers.generateJWT (sub, iat, exp, jti).  It reads
-// JWT_EXPIRY_MINUTES from the environment (default 15).
-func (s *RefreshService) issueAccessToken(userID int64) (string, time.Time, error) {
-	expiryMinutes := 15
-	if v := os.Getenv("JWT_EXPIRY_MINUTES"); v != "" {
-		if m, err := strconv.Atoi(v); err == nil && m > 0 {
-			expiryMinutes = m
-		}
-	}
-
-	now := time.Now()
-	expiresAt := now.Add(time.Duration(expiryMinutes) * time.Minute)
-
-	var jtiBytes [16]byte
-	if _, err := rand.Read(jtiBytes[:]); err != nil {
-		return "", time.Time{}, fmt.Errorf("generate jti: %w", err)
-	}
-
-	claims := jwt.RegisteredClaims{
-		Subject:   strconv.FormatInt(userID, 10),
-		IssuedAt:  jwt.NewNumericDate(now),
-		ExpiresAt: jwt.NewNumericDate(expiresAt),
-		ID:        hex.EncodeToString(jtiBytes[:]),
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := token.SignedString(s.jwtSecret)
-	if err != nil {
-		return "", time.Time{}, fmt.Errorf("sign access token: %w", err)
-	}
-
-	return signed, expiresAt, nil
+// RevokeAllForUser revokes every refresh token for a user (password change).
+func (s *RefreshService) RevokeAllForUser(ctx context.Context, userID int64) error {
+	return s.store.RevokeAllForUser(ctx, userID)
 }

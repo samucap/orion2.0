@@ -1,29 +1,29 @@
 package handlers
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"regexp"
 	"strconv"
+	"sync"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/samucap/orion2.0/internal/auth"
 	"github.com/samucap/orion2.0/internal/db"
 	"github.com/samucap/orion2.0/middleware"
 	"golang.org/x/crypto/bcrypt"
 )
 
+// maxPasswordBytes is bcrypt's input limit; longer passwords fail to hash.
+const maxPasswordBytes = 72
+
 // AuthRequest represents the request body for signup/login
 type AuthRequest struct {
-	Email string `json:"email" validate:"required,email,safe_string"`
-	PW    string `json:"password" validate:"required,min=12"`
+	Email string `json:"email" validate:"required,email,max=254,safe_string"`
+	PW    string `json:"password" validate:"required,min=12,max=72"`
 }
 
 // AuthResponse represents the response body for successful auth
@@ -42,12 +42,17 @@ type LoginRequest struct {
 	AuthRequest
 }
 
-
-var refreshSvc *auth.RefreshService
+var (
+	refreshSvc *auth.RefreshService
+	authCfg    auth.Config
+)
 
 // SetRefreshService injects the refresh token service so Login/Signup
 // can issue HttpOnly refresh cookies alongside the access JWT.
 func SetRefreshService(s *auth.RefreshService) { refreshSvc = s }
+
+// SetAuthConfig injects the token config (secret and lifetimes) loaded at startup.
+func SetAuthConfig(cfg auth.Config) { authCfg = cfg }
 
 // Signup handles user registration
 // POST /api/auth/signup
@@ -55,32 +60,32 @@ func SetRefreshService(s *auth.RefreshService) { refreshSvc = s }
 func Signup(w http.ResponseWriter, r *http.Request, req SignupRequest) {
 	ctx := r.Context()
 
-	// Validate password complexity
 	if err := validatePassword(req.PW); err != nil {
-		slog.Error("Password validation failed", "error", err, "email", req.Email)
-		http.Error(w, `{"error":"Password must be at least 12 characters with uppercase, lowercase, digit, and special character"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"Password must be 12-72 characters with uppercase, lowercase, digit, and special character"}`, http.StatusBadRequest)
 		return
 	}
 
-	// Hash password
 	hashedPW, err := hashPassword(req.PW)
 	if err != nil {
-		slog.Error("Failed to hash password", "error", err, "email", req.Email)
+		slog.Error("Failed to hash password on signup", "error", err)
 		http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
 		return
 	}
 
-	// Create user
 	user, err := db.Users.CreateUser(ctx, req.Email, hashedPW)
 	if err != nil {
-		slog.Error("Failed to create user", "error", err, "email", req.Email)
-		// Generic error to prevent email enumeration
-		http.Error(w, `{"error":"Unable to create account. Email may already be registered"}`, http.StatusConflict)
+		if !errors.Is(err, db.ErrEmailAlreadyExists) {
+			slog.Error("Failed to create user", "error", err)
+			http.Error(w, `{"error":"Service unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+		// One generic response for every failure so the endpoint does not
+		// confirm which emails are registered.
+		http.Error(w, `{"error":"Unable to create account"}`, http.StatusBadRequest)
 		return
 	}
 
-	// Generate JWT
-	token, expiresAt, err := generateJWT(user.ID)
+	token, expiresAt, err := auth.IssueAccessToken(authCfg, user.ID)
 	if err != nil {
 		slog.Error("Failed to generate JWT", "error", err, "user_id", user.ID)
 		http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
@@ -89,7 +94,6 @@ func Signup(w http.ResponseWriter, r *http.Request, req SignupRequest) {
 
 	setRefreshCookieIfAvailable(w, r, user.ID)
 
-	// Return success response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(AuthResponse{
@@ -104,35 +108,32 @@ func Signup(w http.ResponseWriter, r *http.Request, req SignupRequest) {
 func Login(w http.ResponseWriter, r *http.Request, req LoginRequest) {
 	ctx := r.Context()
 
-	// Get user by email
 	user, err := db.Users.GetUserByEmail(ctx, req.Email)
 	if err != nil {
-		if errors.Is(err, db.ErrUserNotFound) {
-			slog.Info("Login attempt for non-existent user", "email", req.Email)
-		} else {
-			slog.Error("Failed to get user by email", "error", err, "email", req.Email)
+		if !errors.Is(err, db.ErrUserNotFound) {
+			slog.Error("Failed to look up user on login", "error", err)
+			http.Error(w, `{"error":"Service unavailable"}`, http.StatusServiceUnavailable)
+			return
 		}
-		// Generic error for both "not found" and DB errors to prevent email enumeration
+		// Spend the same bcrypt time as a real check so response timing
+		// does not reveal whether the email exists.
+		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash(), []byte(req.PW))
 		http.Error(w, `{"error":"Invalid credentials"}`, http.StatusUnauthorized)
 		return
 	}
 
-	// Verify password
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PW), []byte(req.PW)); err != nil {
-		slog.Info("Invalid password for user", "user_id", user.ID, "email", req.Email)
-		// Generic error to prevent email enumeration
+		slog.Info("Login failed: invalid password", "user_id", user.ID)
 		http.Error(w, `{"error":"Invalid credentials"}`, http.StatusUnauthorized)
 		return
 	}
 
-	// Update last login
 	if err := db.Users.UpdateLastLogin(ctx, user.ID); err != nil {
 		slog.Error("Failed to update last login", "error", err, "user_id", user.ID)
 		// Don't fail the login for this
 	}
 
-	// Generate JWT
-	token, expiresAt, err := generateJWT(user.ID)
+	token, expiresAt, err := auth.IssueAccessToken(authCfg, user.ID)
 	if err != nil {
 		slog.Error("Failed to generate JWT", "error", err, "user_id", user.ID)
 		http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
@@ -141,7 +142,6 @@ func Login(w http.ResponseWriter, r *http.Request, req LoginRequest) {
 
 	setRefreshCookieIfAvailable(w, r, user.ID)
 
-	// Return success response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(AuthResponse{
@@ -150,46 +150,13 @@ func Login(w http.ResponseWriter, r *http.Request, req LoginRequest) {
 	})
 }
 
-// RefreshToken handles token refresh.
-// POST /api/auth/refresh
-func RefreshToken(w http.ResponseWriter, r *http.Request) {
-	claims, ok := middleware.UserFromContext(r.Context())
-	if !ok {
-		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-
-	userID, err := strconv.ParseInt(claims.Subject, 10, 64)
-	if err != nil {
-		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-
-	token, expiresAt, err := generateJWT(userID)
-	if err != nil {
-		slog.Error("Failed to generate refreshed JWT", "error", err, "user_id", userID)
-		http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(AuthResponse{
-		Token:     token,
-		ExpiresAt: expiresAt,
-	})
-}
-
-// Logout handles server-side token revocation (logout).
-// POST /api/auth/logout
+// Logout revokes the current session: it blacklists the access token (jti),
+// revokes the refresh token from the cookie when present, and clears the cookie.
+// POST /api/auth/logout (requires Authorization: Bearer <access token>)
 func Logout(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.UserFromContext(r.Context())
-	if !ok {
-		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-
-	userID, err := strconv.ParseInt(claims.Subject, 10, 64)
-	if err != nil {
+	userID, idOK := middleware.UserID(r.Context())
+	if !ok || !idOK {
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
@@ -198,60 +165,20 @@ func Logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Blacklist the current token id (jti) until it expires.
 	if err := db.TokenBlacklist.BlacklistToken(r.Context(), claims.ID, userID, claims.ExpiresAt.Time); err != nil {
-		slog.Error("Failed to blacklist token", "error", err, "user_id", userID, "jti", claims.ID)
+		slog.Error("Failed to blacklist token", "error", err, "user_id", userID)
 		http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
 		return
 	}
 
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// hashPassword hashes a password using bcrypt
-func hashPassword(password string) (string, error) {
-	costStr := os.Getenv("BCRYPT_COST")
-	cost := 12 // default
-	if costStr != "" {
-		if parsedCost, err := strconv.Atoi(costStr); err == nil && parsedCost >= 4 && parsedCost <= 31 {
-			cost = parsedCost
+	if cookie, err := r.Cookie(refreshCookieName); err == nil && cookie.Value != "" && refreshSvc != nil {
+		if err := refreshSvc.RevokeRefreshToken(r.Context(), cookie.Value); err != nil && !errors.Is(err, auth.ErrTokenNotFound) {
+			slog.Warn("Failed to revoke refresh token on logout", "error", err, "user_id", userID)
 		}
 	}
 
-	hashedBytes, err := bcrypt.GenerateFromPassword([]byte(password), cost)
-	if err != nil {
-		return "", err
-	}
-	return string(hashedBytes), nil
-}
-
-// validatePassword enforces password complexity requirements
-func validatePassword(password string) error {
-	if len(password) < 12 {
-		return errors.New("password too short")
-	}
-
-	// Check for at least one uppercase letter
-	if !regexp.MustCompile(`[A-Z]`).MatchString(password) {
-		return errors.New("password must contain at least one uppercase letter")
-	}
-
-	// Check for at least one lowercase letter
-	if !regexp.MustCompile(`[a-z]`).MatchString(password) {
-		return errors.New("password must contain at least one lowercase letter")
-	}
-
-	// Check for at least one digit
-	if !regexp.MustCompile(`[0-9]`).MatchString(password) {
-		return errors.New("password must contain at least one digit")
-	}
-
-	// Check for at least one special character
-	if !regexp.MustCompile(`[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?~]`).MatchString(password) {
-		return errors.New("password must contain at least one special character")
-	}
-
-	return nil
+	clearRefreshCookie(w)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // OpaqueRefresh validates the incoming opaque refresh token (extracted
@@ -274,7 +201,8 @@ func OpaqueRefresh(w http.ResponseWriter, r *http.Request) {
 
 	pair, err := refreshSvc.ValidateAndRotate(r.Context(), rawToken, fingerprint)
 	if err != nil {
-		slog.Warn("refresh token rejected", "error", err)
+		slog.Warn("Refresh token rejected", "error", err)
+		clearRefreshCookie(w)
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
@@ -288,48 +216,116 @@ func OpaqueRefresh(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// OpaqueLogout revokes the current refresh token and clears the
-// HttpOnly cookie.
-// POST /api/auth/logout-token
-func OpaqueLogout(w http.ResponseWriter, r *http.Request) {
-	rawToken, ok := middleware.RawRefreshTokenFromContext(r.Context())
-	if !ok || rawToken == "" {
-		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
-		return
+// hashPassword hashes a password using bcrypt
+func hashPassword(password string) (string, error) {
+	hashedBytes, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost())
+	if err != nil {
+		return "", err
 	}
-
-	if refreshSvc != nil {
-		if err := refreshSvc.RevokeRefreshToken(r.Context(), rawToken); err != nil {
-			slog.Warn("failed to revoke refresh token on logout", "error", err)
-		}
-	}
-
-	clearRefreshCookie(w)
-	w.WriteHeader(http.StatusNoContent)
+	return string(hashedBytes), nil
 }
 
+func bcryptCost() int {
+	cost := 12
+	if v := os.Getenv("BCRYPT_COST"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed >= bcrypt.MinCost && parsed <= bcrypt.MaxCost {
+			cost = parsed
+		}
+	}
+	return cost
+}
+
+var (
+	dummyHashOnce sync.Once
+	dummyHash     []byte
+)
+
+// dummyPasswordHash returns a bcrypt hash at the configured cost, used to
+// equalize login timing for unknown emails.
+func dummyPasswordHash() []byte {
+	dummyHashOnce.Do(func() {
+		h, err := bcrypt.GenerateFromPassword([]byte("timing-equalizer-not-a-real-password"), bcryptCost())
+		if err != nil {
+			panic("bcrypt dummy hash: " + err.Error())
+		}
+		dummyHash = h
+	})
+	return dummyHash
+}
+
+var (
+	reUpper   = regexp.MustCompile(`[A-Z]`)
+	reLower   = regexp.MustCompile(`[a-z]`)
+	reDigit   = regexp.MustCompile(`[0-9]`)
+	reSpecial = regexp.MustCompile(`[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?~]`)
+)
+
+// validatePassword enforces password complexity requirements
+func validatePassword(password string) error {
+	if len(password) < 12 {
+		return errors.New("password too short")
+	}
+	if len(password) > maxPasswordBytes {
+		return errors.New("password exceeds 72 bytes")
+	}
+	if !reUpper.MatchString(password) {
+		return errors.New("password must contain at least one uppercase letter")
+	}
+	if !reLower.MatchString(password) {
+		return errors.New("password must contain at least one lowercase letter")
+	}
+	if !reDigit.MatchString(password) {
+		return errors.New("password must contain at least one digit")
+	}
+	if !reSpecial.MatchString(password) {
+		return errors.New("password must contain at least one special character")
+	}
+	return nil
+}
+
+const (
+	refreshCookieName = "refreshToken"
+	// refreshCookiePath limits the cookie to the auth endpoints that consume it.
+	refreshCookiePath = "/api/auth"
+)
+
+// SameSite=Strict relies on the frontend proxying /api/* through its own
+// domain, which makes this a first-party cookie. Calling the API directly
+// from another site would need SameSite=None, which reopens CSRF.
+// See README "Refresh cookie and CSRF".
 func setRefreshCookie(w http.ResponseWriter, rawToken string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     "refreshToken",
+		Name:     refreshCookieName,
 		Value:    rawToken,
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
-		Path:     "/",
-		MaxAge:   24 * 60 * 60,
+		Path:     refreshCookiePath,
+		MaxAge:   int(refreshTTL().Seconds()),
 	})
 }
 
+func refreshTTL() time.Duration {
+	if authCfg.RefreshTTL > 0 {
+		return authCfg.RefreshTTL
+	}
+	return auth.DefaultRefreshTTL
+}
+
+// clearRefreshCookie expires the cookie at its current path and at the
+// legacy "/" path used before the path was narrowed.
 func clearRefreshCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     "refreshToken",
-		Value:    "",
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
-		Path:     "/",
-		MaxAge:   -1,
-	})
+	for _, path := range []string{refreshCookiePath, "/"} {
+		http.SetCookie(w, &http.Cookie{
+			Name:     refreshCookieName,
+			Value:    "",
+			HttpOnly: true,
+			Secure:   true,
+			SameSite: http.SameSiteStrictMode,
+			Path:     path,
+			MaxAge:   -1,
+		})
+	}
 }
 
 // setRefreshCookieIfAvailable issues an opaque refresh token and sets it
@@ -346,47 +342,4 @@ func setRefreshCookieIfAvailable(w http.ResponseWriter, r *http.Request, userID 
 		return
 	}
 	setRefreshCookie(w, rawRefresh)
-}
-
-// generateJWT creates a JWT token for a user
-func generateJWT(userID int64) (string, time.Time, error) {
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
-		return "", time.Time{}, errors.New("JWT_SECRET not set")
-	}
-
-	// TODO: Change this to config var. Default to an hour.
-	expiryMinutes := 60
-	if expiryMinutesStr := os.Getenv("JWT_EXPIRY_MINUTES"); expiryMinutesStr != "" {
-		parsedMinutes, err := strconv.Atoi(expiryMinutesStr)
-		if err != nil || parsedMinutes <= 0 {
-			return "", time.Time{}, fmt.Errorf("invalid value for JWT_EXPIRY_MINUTES: %s", expiryMinutesStr)
-		}
-		expiryMinutes = parsedMinutes
-	}
-
-	issuedAt := time.Now()
-	expiresAt := issuedAt.Add(time.Duration(expiryMinutes) * time.Minute)
-
-	// jti lets the backend revoke/blacklist a specific issued token.
-	var jtiBytes [16]byte
-	if _, err := rand.Read(jtiBytes[:]); err != nil {
-		return "", time.Time{}, fmt.Errorf("failed to generate token id: %w", err)
-	}
-	jti := hex.EncodeToString(jtiBytes[:])
-
-	claims := jwt.RegisteredClaims{
-		Subject:   strconv.FormatInt(userID, 10),
-		IssuedAt:  jwt.NewNumericDate(issuedAt),
-		ExpiresAt: jwt.NewNumericDate(expiresAt),
-		ID:        jti,
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString([]byte(jwtSecret))
-	if err != nil {
-		return "", time.Time{}, err
-	}
-
-	return tokenString, expiresAt, nil
 }

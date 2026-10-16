@@ -16,16 +16,10 @@ type ProfileResponse struct {
 }
 
 // Profile returns the authenticated user's basic info.
-// GET /api/protected/profile
+// GET /api/profile
 func Profile(w http.ResponseWriter, r *http.Request) {
-	claims, ok := middleware.UserFromContext(r.Context())
+	userID, ok := middleware.UserID(r.Context())
 	if !ok {
-		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-
-	userID, err := strconv.ParseInt(claims.Subject, 10, 64)
-	if err != nil {
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}

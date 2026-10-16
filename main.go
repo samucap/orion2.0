@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -33,6 +34,14 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
+	// Token config is required: refuse to start with a missing or weak JWT_SECRET.
+	authCfg, err := auth.LoadConfig()
+	if err != nil {
+		slog.Error("Invalid auth configuration", "error", err)
+		os.Exit(1)
+	}
+	handlers.SetAuthConfig(authCfg)
+
 	// Initialize database connection (optional)
 	dbPool, err := db.InitDB()
 	if err != nil {
@@ -53,7 +62,7 @@ func main() {
 		}()
 
 		refreshStore := auth.NewPgRefreshTokenStore(dbPool)
-		refreshSvc := auth.NewRefreshService(refreshStore)
+		refreshSvc := auth.NewRefreshService(refreshStore, authCfg)
 		handlers.SetRefreshService(refreshSvc)
 		slog.Info("Refresh token service initialized")
 	}
@@ -69,21 +78,29 @@ func main() {
 
 	// Middleware stack
 	r.Use(chiMiddleware.RequestID)
-	r.Use(chiMiddleware.ClientIPFromHeader("X-Forwarded-For"))
+	// Vercel's edge proxy overwrites X-Real-IP with the connecting client's IP
+	// and drops client-supplied values. Vercel publishes no edge IP ranges, so
+	// trusted-CIDR X-Forwarded-For parsing is not possible there. Off Vercel,
+	// only use this behind a proxy that also overwrites X-Real-IP.
+	r.Use(chiMiddleware.ClientIPFromHeader("X-Real-IP"))
 	r.Use(chiMiddleware.NoCache)
 	r.Use(chiMiddleware.Logger)
 	r.Use(chiMiddleware.Recoverer)
 	r.Use(chiMiddleware.Timeout(60 * time.Second))
-	clientOrigin := os.Getenv("CLIENT_URL")
-	corsOpts := cors.Options{
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Authorization", "Content-Type", "Access-Control-Allow-Origin"},
-		AllowCredentials: false,
-		MaxAge:           300, // Maximum value not ignored by any of major browsers
+	// An empty AllowedOrigins list means "allow all" in go-chi/cors, so always
+	// set it. Origins include scheme and port, hence the localhost wildcard.
+	allowedOrigins := []string{"http://localhost:*"}
+	if clientOrigin := os.Getenv("CLIENT_URL"); clientOrigin != "" {
+		// Browsers send Origin without a trailing slash.
+		allowedOrigins = []string{strings.TrimRight(clientOrigin, "/")}
 	}
-
-	if clientOrigin != "" {
-		corsOpts.AllowedOrigins = []string{clientOrigin}
+	corsOpts := cors.Options{
+		AllowedOrigins: allowedOrigins,
+		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders: []string{"Authorization", "Content-Type"},
+		// Required for the browser to send/store the refresh cookie cross-origin.
+		AllowCredentials: true,
+		MaxAge:           300, // Maximum value not ignored by any of major browsers
 	}
 
 	r.Use(cors.Handler(corsOpts))
@@ -96,30 +113,41 @@ func main() {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	// Cache management (always public)
-	r.Post("/cache/clear", handlers.ClearCache)
-
 	// API routes
 	r.Route("/api", func(r chi.Router) {
+		// Only JSON bodies. A JSON Content-Type forces a CORS preflight, so
+		// cross-site HTML forms (text/plain, urlencoded) cannot reach handlers.
+		r.Use(chiMiddleware.AllowContentType("application/json"))
+
 		r.Route("/auth", func(r chi.Router) {
 			r.Use(middleware.RateLimit(2, 5))
 			// TODO: limit failed login attempts
 			r.Post("/", middleware.ValidateBody(handlers.Login))
 			r.Post("/signup", middleware.ValidateBody(handlers.Signup))
-			r.With(middleware.Auth).Post("/refresh", handlers.RefreshToken)
-			r.With(middleware.Auth).Post("/logout", handlers.Logout)
-			r.With(middleware.RefreshToken).Post("/refresh-token", handlers.OpaqueRefresh)
-			r.With(middleware.RefreshToken).Post("/logout-token", handlers.OpaqueLogout)
+			r.With(middleware.Auth(authCfg)).Post("/logout", handlers.Logout)
+			// Cookie-only auth: reject cross-site callers before reading the cookie.
+			r.With(middleware.RequireOrigin(allowedOrigins), middleware.RefreshToken).Post("/refresh-token", handlers.OpaqueRefresh)
 		})
 
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RateLimit(5, 10))
-			r.Use(middleware.Auth)
+			r.Use(middleware.Auth(authCfg))
 			r.Get("/events-v2", middleware.ValidateQuery(handlers.GetEventsV2))
 			r.Get("/top-nav", middleware.ValidateQuery(handlers.GetTopNav))
+			r.Get("/dashboard/stats", handlers.DashboardStats)
+			r.Get("/dashboard/trending", handlers.DashboardTrending)
+			r.Get("/dashboard/activity", handlers.DashboardActivity)
+			r.Get("/dashboard/treemap", handlers.DashboardTreemap)
+			r.Get("/dashboard/edge", handlers.DashboardEdge)
+			r.Get("/dashboard/whales", handlers.DashboardWhales)
+			r.Get("/dashboard/depth", handlers.DashboardDepth)
+			r.Get("/dashboard/correlation", handlers.DashboardCorrelation)
+			r.Get("/dashboard/arbitrage", handlers.DashboardArbitrage)
 			r.Get("/profile", handlers.Profile)
 			r.Put("/profile", middleware.ValidateBody(handlers.UpdateProfile))
+			r.Put("/profile/password", middleware.ValidateBody(handlers.UpdateProfilePassword))
 			r.Delete("/profile", middleware.ValidateBody(handlers.DeleteAccount))
+			r.Post("/cache/clear", handlers.ClearCache)
 		})
 	})
 

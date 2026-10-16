@@ -1,11 +1,12 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 	"github.com/samucap/orion2.0/internal/db"
 )
 
-//TODO: need to return market and events objects withtout much manipulation, because now that I think about it,
+// TODO: need to return market and events objects withtout much manipulation, because now that I think about it,
 // data returned can be used for subsequent routes so no need to manipulate it here
 
 // Package-level cache instance (initialized in main.go)
@@ -24,7 +25,7 @@ func SetCache(c cache.Cache) {
 	eventCache = c
 }
 
-// ClearCache handles POST /cache/clear endpoint
+// ClearCache handles POST /api/cache/clear (requires auth)
 // Manually clears the in-memory event cache
 func ClearCache(w http.ResponseWriter, r *http.Request) {
 	if eventCache != nil {
@@ -35,133 +36,131 @@ func ClearCache(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"cache_cleared"}`))
 }
 
+// GetEventsV2Request is the allow-listed query for GET /api/events-v2.
+// IDs, limit, and offset are digits only; amounts may be decimals.
 type GetEventsV2Request struct {
-	TagID        string `json:"tag_id" validate:"omitempty,numeric"`
-	Cat          string `json:"cat" validate:"omitempty,numeric"`
-	Order        string `json:"order" validate:"omitempty,alphanum"`
+	TagID        string `json:"tag_id" validate:"omitempty,number,max=20"`
+	Cat          string `json:"cat" validate:"omitempty,number,max=20"`
+	Order        string `json:"order" validate:"omitempty,alphanum,max=32"`
 	Ascending    string `json:"ascending" validate:"omitempty,oneof=true false"`
-	Limit        string `json:"limit" validate:"omitempty,numeric"`
+	Limit        string `json:"limit" validate:"omitempty,uint_lte=100"`
 	Active       string `json:"active" validate:"omitempty,oneof=true false"`
 	Closed       string `json:"closed" validate:"omitempty,oneof=true false"`
-	Offset       string `json:"offset" validate:"omitempty,numeric"`
-	EndDateMax   string `json:"end_date_max" validate:"omitempty"`
-	StartDateMin string `json:"start_date_min" validate:"omitempty"`
-	SpreadMax    string `json:"spread_max" validate:"omitempty,numeric"`
-	RewardMin    string `json:"rewardMin" validate:"omitempty,numeric"`
-	VolumeMin    string `json:"volume_min" validate:"omitempty,numeric"`
-	LiquidityMin string `json:"liquidity_min" validate:"omitempty,numeric"`
-	ExcludeTagID string `json:"exclude_tag_id" validate:"omitempty,numeric"`
+	Offset       string `json:"offset" validate:"omitempty,uint_lte=10000"`
+	EndDateMax   string `json:"end_date_max" validate:"omitempty,max=35,date_or_rfc3339"`
+	StartDateMin string `json:"start_date_min" validate:"omitempty,max=35,date_or_rfc3339"`
+	SpreadMax    string `json:"spread_max" validate:"omitempty,numeric,max=20"`
+	RewardMin    string `json:"rewardMin" validate:"omitempty,numeric,max=20"`
+	VolumeMin    string `json:"volume_min" validate:"omitempty,numeric,max=20"`
+	LiquidityMin string `json:"liquidity_min" validate:"omitempty,numeric,max=20"`
+	ExcludeTagID string `json:"exclude_tag_id" validate:"omitempty,number,max=20"`
 }
 
-// GetEventsV2 handles GET /events-v2 endpoint
-// Returns events with fixed classification logic and standardized V2 schema for frontend Event Cards
-func GetEventsV2(w http.ResponseWriter, r *http.Request, req GetEventsV2Request) {
-	// Helper: return param value or fallback default
-	getParam := func(val, fallback string) string {
+const (
+	gammaEventsURL = "https://gamma-api.polymarket.com/events"
+	// maxGammaResponseBytes bounds memory used per upstream response.
+	maxGammaResponseBytes = 10 << 20
+)
+
+// gammaClient bounds every upstream call; http.DefaultClient has no timeout.
+var gammaClient = &http.Client{Timeout: 10 * time.Second}
+
+// BuildGammaEventsURL builds the Polymarket Gamma events URL from a validated
+// request. Values are encoded with url.Values, so no input can add or
+// override query parameters.
+func BuildGammaEventsURL(req GetEventsV2Request) string {
+	orDefault := func(val, fallback string) string {
 		if val != "" {
 			return val
 		}
 		return fallback
 	}
 
+	q := url.Values{}
+	q.Set("archived", "false")
+	q.Set("include_chat", "false")
+	q.Set("cyom", "false")
+	q.Set("include_template", "false")
+	q.Set("active", orDefault(req.Active, "true"))
+	q.Set("closed", orDefault(req.Closed, "false"))
+	q.Set("ascending", orDefault(req.Ascending, "false"))
+	q.Set("limit", orDefault(req.Limit, "50"))
+	q.Set("order", orDefault(req.Order, "volume24hr"))
+
 	// tag_id: accept both "tag_id" and legacy "cat" (tag_id takes priority)
-	tagID := req.TagID
-	if tagID == "" {
-		tagID = req.Cat
-	}
-
-	// Params with defaults (preserve existing behavior when frontend omits them)
-	order := getParam(req.Order, "volume24hr")
-	ascending := getParam(req.Ascending, "false")
-	limit := getParam(req.Limit, "50")
-	active := getParam(req.Active, "true")
-	closed := getParam(req.Closed, "false")
-
-	// Optional params — only appended to Gamma URL if provided
-	offset := req.Offset
-	endDateMax := req.EndDateMax
-	startDateMin := req.StartDateMin
-	spreadMax := req.SpreadMax
-	rewardMin := req.RewardMin
-	volMin := req.VolumeMin
-	liqMin := req.LiquidityMin
-	excludeTagId := req.ExcludeTagID
-
-	// Build Polymarket Gamma API URL
-	gammaBase := `https://gamma-api.polymarket.com`
-	evPath := fmt.Sprintf(
-		"/events?archived=false&include_chat=false&cyom=false&include_template=false"+
-			"&active=%s&closed=%s&ascending=%s&limit=%s"+
-			"&order=%s",
-		active, closed, ascending, limit,
-		order,
-	)
+	tagID := orDefault(req.TagID, req.Cat)
 	if tagID != "" {
-		evPath += "&tag_id=" + tagID
+		q.Set("tag_id", tagID)
 		if tagID == "100215" {
-			evPath += "&related_tags=true"
+			q.Set("related_tags", "true")
 		}
 	}
 
-	if volMin != "" {
-		evPath += "&volume_min=" + volMin
+	optional := []struct{ key, val string }{
+		{"volume_min", req.VolumeMin},
+		{"liquidity_min", req.LiquidityMin},
+		{"offset", req.Offset},
+		{"end_date_max", req.EndDateMax},
+		{"start_date_min", req.StartDateMin},
+		{"spread_max", req.SpreadMax},
+		{"reward_min", req.RewardMin},
+		{"exclude_tag_id", req.ExcludeTagID},
 	}
-	if liqMin != "" {
-		evPath += "&liquidity_min=" + liqMin
-	}
-	if offset != "" {
-		evPath += "&offset=" + offset
-	}
-	if endDateMax != "" {
-		evPath += "&end_date_max=" + endDateMax
-	}
-	if startDateMin != "" {
-		evPath += "&start_date_min=" + startDateMin
-	}
-	if spreadMax != "" {
-		evPath += "&spread_max=" + spreadMax
-	}
-	if rewardMin != "" {
-		evPath += "&reward_min=" + rewardMin
-	}
-	if excludeTagId != "" {
-		evPath += "&exclude_tag_id=" + excludeTagId
+	for _, p := range optional {
+		if p.val != "" {
+			q.Set(p.key, p.val)
+		}
 	}
 
-	resp, err := http.Get(gammaBase + evPath)
-	if err != nil {
+	return gammaEventsURL + "?" + q.Encode()
+}
+
+// GetEventsV2 handles GET /events-v2 endpoint
+// Returns events with fixed classification logic and standardized V2 schema for frontend Event Cards
+func GetEventsV2(w http.ResponseWriter, r *http.Request, req GetEventsV2Request) {
+	ctx := r.Context()
+
+	writeUpstreamError := func(status int) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(status)
 		w.Write([]byte(`{"error":"Failed to fetch events from external API"}`))
+	}
+
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodGet, BuildGammaEventsURL(req), nil)
+	if err != nil {
+		slog.Error("Failed to build Gamma request", "error", err)
+		writeUpstreamError(http.StatusInternalServerError)
+		return
+	}
+
+	resp, err := gammaClient.Do(upstreamReq)
+	if err != nil {
+		slog.Error("Gamma request failed", "error", err)
+		writeUpstreamError(http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(fmt.Sprintf(`{"error":"External API returned status %d"}`, resp.StatusCode)))
+		slog.Error("Gamma returned non-200", "status", resp.StatusCode)
+		writeUpstreamError(http.StatusBadGateway)
 		return
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error":"Failed to read response from external API"}`))
+		slog.Error("Failed to read Gamma response", "error", err)
+		writeUpstreamError(http.StatusBadGateway)
 		return
 	}
 
 	// Parse into typed structs
 	var rawEvents []RawGammaEvent
 	if err := json.Unmarshal(body, &rawEvents); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
-		w.Write([]byte(fmt.Sprintf(`{"error":"Invalid response from external API: %s"}`, err.Error())))
+		slog.Error("Failed to parse Gamma response", "error", err)
+		writeUpstreamError(http.StatusBadGateway)
 		return
 	}
-
-	ctx := context.Background()
 
 	// Load leagues map (cached for performance)
 	leaguesBySlug, err := db.QueryAllLeagues(ctx)

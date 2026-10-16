@@ -13,28 +13,22 @@ import (
 )
 
 type ChangeEmailRequest struct {
-	Email string `json:"email" validate:"required,email,safe_string"`
-	PW    string `json:"password" validate:"required,min=12"` // current password confirmation
+	Email string `json:"email" validate:"required,email,max=254,safe_string"`
+	PW    string `json:"password" validate:"required,min=12,max=72"` // current password confirmation
 }
 
 type ChangePasswordRequest struct {
-	CurrentPW string `json:"current_password" validate:"required,min=12"`
-	NewPW     string `json:"password" validate:"required,min=12"` // new password
+	CurrentPW string `json:"current_password" validate:"required,min=12,max=72"`
+	NewPW     string `json:"password" validate:"required,min=12,max=72"` // new password
 }
 
 type DeleteAccountRequest struct {
-	PW string `json:"password" validate:"required,min=12"`
+	PW string `json:"password" validate:"required,min=12,max=72"`
 }
 
 func UpdateProfile(w http.ResponseWriter, r *http.Request, req ChangeEmailRequest) {
-	claims, ok := middleware.UserFromContext(r.Context())
+	userID, ok := middleware.UserID(r.Context())
 	if !ok {
-		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-
-	userID, err := strconv.ParseInt(claims.Subject, 10, 64)
-	if err != nil {
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
@@ -67,23 +61,11 @@ func UpdateProfile(w http.ResponseWriter, r *http.Request, req ChangeEmailReques
 	})
 }
 
-// UpdateProfileEmail is a compatibility wrapper used by existing route wiring/tests.
-// Behavior is identical to UpdateProfile.
-func UpdateProfileEmail(w http.ResponseWriter, r *http.Request, req ChangeEmailRequest) {
-	UpdateProfile(w, r, req)
-}
-
 // UpdateProfilePassword updates the authenticated user's password.
 // PUT /api/profile/password
 func UpdateProfilePassword(w http.ResponseWriter, r *http.Request, req ChangePasswordRequest) {
-	claims, ok := middleware.UserFromContext(r.Context())
+	userID, ok := middleware.UserID(r.Context())
 	if !ok {
-		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-
-	userID, err := strconv.ParseInt(claims.Subject, 10, 64)
-	if err != nil {
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
@@ -117,20 +99,25 @@ func UpdateProfilePassword(w http.ResponseWriter, r *http.Request, req ChangePas
 		return
 	}
 
+	// Sign out every other session: revoke all refresh tokens, then give
+	// this browser a fresh one so the caller stays logged in.
+	if refreshSvc != nil {
+		if err := refreshSvc.RevokeAllForUser(r.Context(), userID); err != nil {
+			slog.Error("Failed to revoke refresh tokens after password change", "error", err, "user_id", userID)
+			http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
+			return
+		}
+		setRefreshCookieIfAvailable(w, r, userID)
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // DeleteAccount deletes the authenticated user's account.
 // DELETE /api/profile
 func DeleteAccount(w http.ResponseWriter, r *http.Request, req DeleteAccountRequest) {
-	claims, ok := middleware.UserFromContext(r.Context())
+	userID, ok := middleware.UserID(r.Context())
 	if !ok {
-		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-
-	userID, err := strconv.ParseInt(claims.Subject, 10, 64)
-	if err != nil {
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
@@ -152,5 +139,7 @@ func DeleteAccount(w http.ResponseWriter, r *http.Request, req DeleteAccountRequ
 		return
 	}
 
+	// Refresh tokens are deleted with the user (ON DELETE CASCADE).
+	clearRefreshCookie(w)
 	w.WriteHeader(http.StatusNoContent)
 }

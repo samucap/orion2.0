@@ -21,6 +21,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -55,6 +56,10 @@ type RefreshTokenStore interface {
 	InsertRefreshToken(ctx context.Context, tokenHash string, userID int64, fingerprint string, expiresAt time.Time) error
 	// GetByTokenHash retrieves a refresh token row by its SHA-256 hash.
 	GetByTokenHash(ctx context.Context, tokenHash string) (*RefreshToken, error)
+	// ClaimActive atomically revokes the token if it is active (unrevoked
+	// and unexpired) and returns the claimed row; it returns nil, nil when
+	// no active token matched.
+	ClaimActive(ctx context.Context, tokenHash string) (*RefreshToken, error)
 	// RevokeByID marks a single refresh token as revoked.
 	RevokeByID(ctx context.Context, id int64) error
 	// RevokeAllForUser revokes every refresh token belonging to a user
@@ -102,6 +107,27 @@ func (s *PgRefreshTokenStore) GetByTokenHash(ctx context.Context, tokenHash stri
 			return nil, nil
 		}
 		return nil, fmt.Errorf("get refresh token by hash: %w", err)
+	}
+	return &t, nil
+}
+
+// ClaimActive revokes an active token in a single UPDATE so concurrent
+// rotations of the same token cannot both succeed.
+func (s *PgRefreshTokenStore) ClaimActive(ctx context.Context, tokenHash string) (*RefreshToken, error) {
+	q := `UPDATE refresh_tokens SET revoked = TRUE
+	      WHERE token_hash = $1 AND revoked = FALSE AND expires_at > NOW()
+	      RETURNING id, token_hash, user_id, expires_at, revoked, device_fingerprint, created_at, updated_at`
+
+	var t RefreshToken
+	err := s.pool.QueryRow(ctx, q, tokenHash).Scan(
+		&t.ID, &t.TokenHash, &t.UserID, &t.ExpiresAt,
+		&t.Revoked, &t.DeviceFingerprint, &t.CreatedAt, &t.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("claim refresh token: %w", err)
 	}
 	return &t, nil
 }

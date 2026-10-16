@@ -14,120 +14,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestGetEvents(t *testing.T) {
-	validToken := issueTestToken(t, 1234567890)
-	tests := []struct {
-		name           string
-		authEnabled    bool
-		authHeader     string
-		expectedStatus int
-		expectBody     bool
-	}{
-		{
-			name:           "success without auth",
-			authEnabled:    false,
-			expectedStatus: http.StatusOK,
-			expectBody:     true,
-		},
-		{
-			name:           "success with valid auth",
-			authEnabled:    true,
-			authHeader:     "Bearer " + validToken,
-			expectedStatus: http.StatusOK,
-			expectBody:     true,
-		},
-		{
-			name:           "unauthorized missing header",
-			authEnabled:    true,
-			expectedStatus: http.StatusUnauthorized,
-			expectBody:     false,
-		},
-		{
-			name:           "unauthorized invalid token",
-			authEnabled:    true,
-			authHeader:     "Bearer invalid.token.here",
-			expectedStatus: http.StatusUnauthorized,
-			expectBody:     false,
-		},
-		{
-			name:           "unauthorized wrong format",
-			authEnabled:    true,
-			authHeader:     "Basic dXNlcjpwYXNz",
-			expectedStatus: http.StatusUnauthorized,
-			expectBody:     false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Set up environment
-			if tt.authEnabled {
-				os.Setenv("AUTH_ENABLED", "true")
-				os.Setenv("JWT_SECRET", testJWTSecret)
-				origBlacklist := db.TokenBlacklist
-				db.TokenBlacklist = &mockTokenBlacklist{}
-				t.Cleanup(func() { db.TokenBlacklist = origBlacklist })
-			} else {
-				os.Setenv("AUTH_ENABLED", "false")
-			}
-			defer func() {
-				os.Unsetenv("AUTH_ENABLED")
-				os.Unsetenv("JWT_SECRET")
-			}()
-
-			// Skip tests that require external API calls
-			if tt.expectBody {
-				t.Skip("Skipping test - requires external API connectivity")
-			}
-
-			// Create router
-			r := chi.NewRouter()
-
-			// Add auth middleware if enabled
-			if tt.authEnabled {
-				r.Use(middleware.Auth)
-			}
-
-			r.Get("/events", handlers.GetEvents)
-
-			// Create request
-			req := httptest.NewRequest(http.MethodGet, "/events", nil)
-			if tt.authHeader != "" {
-				req.Header.Set("Authorization", tt.authHeader)
-			}
-
-			// Create response recorder
-			w := httptest.NewRecorder()
-
-			// Serve request
-			r.ServeHTTP(w, req)
-
-			// Assert status
-			assert.Equal(t, tt.expectedStatus, w.Code)
-
-			if tt.expectBody && w.Code == http.StatusOK {
-				body := w.Body.Bytes()
-				assert.NotEmpty(t, body)
-
-				// Verify it's valid JSON array of CleanEvent objects
-				var events []handlers.CleanEvent
-				err := json.Unmarshal(body, &events)
-				assert.NoError(t, err, "Response should be valid JSON array of CleanEvent")
-
-				if err == nil && len(events) > 0 {
-					// Verify structure of first event has expected CleanEvent fields
-					event := events[0]
-					assert.NotEmpty(t, event.ID, "Event should have id")
-					assert.NotEmpty(t, event.Title, "Event should have title")
-					assert.NotEmpty(t, event.Layout, "Event should have layout")
-					assert.Contains(t, []string{"POLL", "SPORTS", "BINARY"}, event.Layout, "Layout should be valid")
-					assert.NotNil(t, event.DisplayData, "Event should have displayData")
-				}
-			}
-		})
-	}
-}
-
 func TestGetTopNav(t *testing.T) {
 	validToken := issueTestToken(t, 1234567890)
 	tests := []struct {
@@ -180,7 +66,7 @@ func TestGetTopNav(t *testing.T) {
 
 			// Add auth middleware if enabled
 			if tt.authEnabled {
-				r.Use(middleware.Auth)
+				r.Use(middleware.Auth(testAuthConfig(t)))
 			}
 
 			r.Get("/top-nav", middleware.ValidateQuery(handlers.GetTopNav))

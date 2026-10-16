@@ -63,6 +63,18 @@ func (m *mockRefreshStore) GetByTokenHash(_ context.Context, tokenHash string) (
 	return &cp, nil
 }
 
+func (m *mockRefreshStore) ClaimActive(_ context.Context, tokenHash string) (*auth.RefreshToken, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tokens[tokenHash]
+	if !ok || t.Revoked || !time.Now().Before(t.ExpiresAt) {
+		return nil, nil
+	}
+	t.Revoked = true
+	cp := *t
+	return &cp, nil
+}
+
 func (m *mockRefreshStore) RevokeByID(_ context.Context, id int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -101,18 +113,19 @@ func seedRefreshToken(store *mockRefreshStore, raw string, userID int64, fingerp
 
 func setupRefreshTest(t *testing.T) (*chi.Mux, *mockRefreshStore) {
 	t.Helper()
-	t.Setenv("JWT_SECRET", refreshTestSecret)
-	t.Setenv("JWT_EXPIRY_MINUTES", "15")
+	setAuthEnv(t)
+	cfg, err := auth.NewConfig(refreshTestSecret, 15*time.Minute)
+	require.NoError(t, err)
 
 	store := newMockRefreshStore()
-	svc := auth.NewRefreshService(store)
+	svc := auth.NewRefreshService(store, cfg)
 	handlers.SetRefreshService(svc)
 	t.Cleanup(func() { handlers.SetRefreshService(nil) })
 
 	r := chi.NewRouter()
 	r.Route("/auth", func(r chi.Router) {
 		r.With(middleware.RefreshToken).Post("/refresh-token", handlers.OpaqueRefresh)
-		r.With(middleware.RefreshToken).Post("/logout-token", handlers.OpaqueLogout)
+		r.With(middleware.Auth(cfg)).Post("/logout", handlers.Logout)
 	})
 	return r, store
 }
@@ -128,9 +141,7 @@ func refreshReq(method, path, cookieVal string) *http.Request {
 }
 
 func computeFingerprint(r *http.Request) string {
-	data := r.Header.Get("User-Agent") +
-		"|" + r.Header.Get("Accept-Language") +
-		"|" + r.Header.Get("X-Forwarded-For")
+	data := r.Header.Get("User-Agent") + "|" + r.Header.Get("Accept-Language")
 	h := sha256.Sum256([]byte(data))
 	return hex.EncodeToString(h[:])
 }
@@ -172,6 +183,8 @@ func TestRefresh_SuccessfulRotation(t *testing.T) {
 	assert.True(t, refreshCookie.HttpOnly)
 	assert.True(t, refreshCookie.Secure)
 	assert.Equal(t, http.SameSiteStrictMode, refreshCookie.SameSite)
+	assert.Equal(t, "/api/auth", refreshCookie.Path)
+	assert.Equal(t, int((7 * 24 * time.Hour).Seconds()), refreshCookie.MaxAge, "cookie lifetime must match the 7-day DB TTL")
 
 	oldRow, _ := store.GetByTokenHash(context.Background(), hashToken(rawOld))
 	require.NotNil(t, oldRow)
@@ -266,12 +279,13 @@ func TestRefresh_DeviceFingerprintChange(t *testing.T) {
 }
 
 // TestLogout_RevokesAndClearsCookie verifies that the logout endpoint
-// revokes the token and clears the cookie.
+// blacklists the access token, revokes the refresh token, and clears the cookie.
 func TestLogout_RevokesAndClearsCookie(t *testing.T) {
 	router, store := setupRefreshTest(t)
 
 	rawToken := "bbbbbbbb00000000bbbbbbbb00000000bbbbbbbb00000000bbbbbbbb00000000"
-	req := refreshReq("POST", "/auth/logout-token", rawToken)
+	req := refreshReq("POST", "/auth/logout", rawToken)
+	req.Header.Set("Authorization", "Bearer "+issueTestToken(t, 10))
 	fp := computeFingerprint(req)
 	seedRefreshToken(store, rawToken, 10, fp, time.Now().Add(24*time.Hour))
 
@@ -292,8 +306,47 @@ func TestLogout_RevokesAndClearsCookie(t *testing.T) {
 		}
 	}
 	require.NotNil(t, cleared, "logout should clear the refreshToken cookie")
+	assert.Equal(t, "/api/auth", cleared.Path)
 	assert.Equal(t, "", cleared.Value)
 	assert.True(t, cleared.MaxAge < 0, "MaxAge should be negative to expire the cookie")
+}
+
+// TestLogout_RequiresAccessToken verifies a refresh cookie alone cannot log out.
+func TestLogout_RequiresAccessToken(t *testing.T) {
+	router, _ := setupRefreshTest(t)
+	req := refreshReq("POST", "/auth/logout", "some-refresh-token")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+// TestRefresh_ReplayAfterRotationRevokesFamily verifies that reusing a
+// token after a successful rotation is rejected and kills the new token too.
+func TestRefresh_ReplayAfterRotationRevokesFamily(t *testing.T) {
+	router, store := setupRefreshTest(t)
+
+	rawOld := "cafebabe00000000cafebabe00000000cafebabe00000000cafebabe00000000"
+	req := refreshReq("POST", "/auth/refresh-token", rawOld)
+	seedRefreshToken(store, rawOld, 5, computeFingerprint(req), time.Now().Add(24*time.Hour))
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	var newRaw string
+	for _, c := range w.Result().Cookies() {
+		if c.Name == "refreshToken" && c.Value != "" {
+			newRaw = c.Value
+		}
+	}
+	require.NotEmpty(t, newRaw)
+
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, refreshReq("POST", "/auth/refresh-token", rawOld))
+	assert.Equal(t, http.StatusUnauthorized, w2.Code)
+
+	row, _ := store.GetByTokenHash(context.Background(), hashToken(newRaw))
+	require.NotNil(t, row)
+	assert.True(t, row.Revoked, "rotated-in token must be revoked after replay of its predecessor")
 }
 
 // ---------------------------------------------------------------------------

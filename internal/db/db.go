@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 	"unicode/utf8"
@@ -120,8 +122,9 @@ type League struct {
 // InitDB initializes the PostgreSQL connection pool
 func InitDB() (*pgxpool.Pool, error) {
 	connString := os.Getenv("POSTGRES_URL")
+	currEnv := os.Getenv("ENV")
 
-	if connString == "" {
+	if currEnv == "dev" && connString == "" {
 		user := os.Getenv("POSTGRES_USER")
 		password := os.Getenv("POSTGRES_PASSWORD")
 		dbname := os.Getenv("POSTGRES_DB")
@@ -134,8 +137,24 @@ func InitDB() (*pgxpool.Pool, error) {
 			port = "5432"
 		}
 
-		// Build connection string
-		connString = fmt.Sprintf("postgres://%s:%s@%s:%s/%s", user, password, host, port, dbname)
+		// TLS is required by default; set POSTGRES_SSLMODE=disable only for
+		// a local database on the same machine/network.
+		sslmode := os.Getenv("POSTGRES_SSLMODE")
+
+		// Build connection string (escape credentials so special characters
+		// cannot break the URL)
+		u := url.URL{
+			Scheme: "postgres",
+			User:   url.UserPassword(user, password),
+			Host:   net.JoinHostPort(host, port),
+			Path:   "/" + dbname,
+		}
+
+		if sslmode != "" {
+			u.RawQuery = url.Values{"sslmode": {sslmode}}.Encode()
+		}
+
+		connString = u.String()
 	}
 
 	config, err := pgxpool.ParseConfig(connString)
